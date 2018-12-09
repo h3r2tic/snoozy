@@ -55,8 +55,12 @@ macro_rules! snoozy {
 
 		#[allow(dead_code)]
 		pub fn $name($($arg: $argtype),*) -> SnoozyRef<$ret> {
+			lazy_static! {
+				static ref op_source_hash: u64 = calculate_hash(&stringify!($body));
+			}
+
 			use snoozy::*;
-			def($name::op_struct::$name { $($arg: $arg),* })
+			def($name::op_struct::$name { $($arg: $arg),* }, *op_source_hash)
 		}
 	}
 }

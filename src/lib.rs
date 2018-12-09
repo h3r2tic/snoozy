@@ -434,9 +434,9 @@ pub fn calculate_serialized_hash<T: serde::Serialize>(t: &T) -> u64 {
 }
 
 pub fn def<AssetType: 'static + Send + Sync, OpType: Op<Res = AssetType> + RecipeHash>(
-    op: OpType,
+    op: OpType, op_source_hash: u64,
 ) -> SnoozyRef<AssetType> {
-    def_named(op.recipe_hash(), op)
+    def_named(op.recipe_hash() ^ op_source_hash, op)
 }
 
 pub fn def_named<AssetType: 'static + Send + Sync, OpType: Op<Res = AssetType> + RecipeHash>(
