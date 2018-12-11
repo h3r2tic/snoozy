@@ -1,6 +1,6 @@
 #[macro_export]
 macro_rules! snoozy {
-    (fn $name:ident ($ctx:ident: &mut Context, $($arg:ident : &$argtype:ty),*) -> Result<$ret:tt> $body:expr) => {
+    (fn $name:ident ($ctx:ident: &mut Context $(,$arg:ident : &$argtype:ty)*) -> Result<$ret:tt> $body:expr) => {
 		pub mod $name {
 			use snoozy::*;
 
