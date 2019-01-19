@@ -564,7 +564,7 @@ impl Snapshot {
 
 pub fn with_snapshot<F, Ret>(mut callback: F) -> Ret
 where
-    F: FnMut(&mut Snapshot) -> Ret,
+    F: FnOnce(&mut Snapshot) -> Ret,
 {
     ASSET_REG.propagate_invalidations();
     let mut snap = Snapshot;
