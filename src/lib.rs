@@ -1,3 +1,4 @@
+#![feature(specialization)]
 #![cfg_attr(feature = "core_intrinsics", feature(core_intrinsics))]
 
 #[macro_use]
@@ -42,12 +43,6 @@ impl<T: Hash> WeakHash for T {
 
 pub trait RecipeHash {
     fn recipe_hash(&self) -> u64;
-}
-
-impl<T: serde::Serialize> RecipeHash for T {
-    fn recipe_hash(&self) -> u64 {
-        calculate_serialized_hash(&self)
-    }
 }
 
 pub struct Context {
@@ -422,11 +417,49 @@ pub fn calculate_hash<T: Hash>(t: &T) -> u64 {
     s.finish()
 }
 
+pub trait PodVecHash {
+    fn pod_vec_hash(&self) -> Option<u64>;
+}
+
+impl<T> PodVecHash for T {
+    default fn pod_vec_hash(&self) -> Option<u64> {
+        None
+    }
+}
+
+impl<T> PodVecHash for Vec<T>
+where
+    T: Copy,
+{
+    fn pod_vec_hash(&self) -> Option<u64> {
+        //let time0 = std::time::Instant::now();
+
+        let mut s = XxHash::default();
+        unsafe {
+            let p = self.as_ptr();
+            let item_sizeof = std::mem::size_of::<T>();
+            let len = self.len() * item_sizeof;
+            std::slice::from_raw_parts(p as *const u8, len).hash(&mut s);
+        }
+        //println!("[fast path] Hash calculated in {:?}", time0.elapsed());
+
+        Some(s.finish())
+    }
+}
+
 pub fn calculate_serialized_hash<T: serde::Serialize>(t: &T) -> u64 {
-    let mut s = XxHash::default();
-    let encoded: Vec<u8> = bincode::serialize(&t).unwrap();
-    encoded.hash(&mut s);
-    s.finish()
+    if let Some(h) = PodVecHash::pod_vec_hash(t) {
+        h
+    } else {
+        //let time0 = std::time::Instant::now();
+        let mut s = XxHash::default();
+        let encoded: Vec<u8> = bincode::serialize(&t).unwrap();
+        //println!("Hashable data serialized in {:?}", time0.elapsed());
+        //let time0 = std::time::Instant::now();
+        encoded.hash(&mut s);
+        //println!("Hash calculated in {:?}", time0.elapsed());
+        s.finish()
+    }
 }
 
 pub fn def<AssetType: 'static + Send + Sync, OpType: Op<Res = AssetType> + RecipeHash>(

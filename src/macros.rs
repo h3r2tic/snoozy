@@ -9,10 +9,16 @@ macro_rules! snoozy {
 				use super::super::*;
 
 				#[allow(non_camel_case_types)]
-				#[derive(Serialize, Debug)]
+				#[derive(Debug)]
 				pub struct $name {
 					$(pub $arg: $argtype),*
 				}
+
+                impl RecipeHash for $name {
+                    fn recipe_hash(&self) -> u64 {
+                        0 $(^calculate_serialized_hash(&self.$arg))*
+                    }
+                }
 
 				impl Op for $name {
 					type Res = $ret;
