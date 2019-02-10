@@ -1,6 +1,6 @@
 #[macro_export]
 macro_rules! snoozy {
-    (fn $name:ident ($ctx:ident: &mut Context $(,$arg:ident : &$argtype:ty)*) -> Result<$ret:tt> $body:expr) => {
+    (fn $name:ident ($ctx:ident: &mut Context $(,$arg:ident : &$argtype:ty)*) -> Result<$ret:ty> $body:expr) => {
 		pub mod $name {
 			use snoozy::*;
 
@@ -9,7 +9,6 @@ macro_rules! snoozy {
 				use super::super::*;
 
 				#[allow(non_camel_case_types)]
-				#[derive(Debug)]
 				pub struct $name {
 					$(pub $arg: $argtype),*
 				}
@@ -61,12 +60,17 @@ macro_rules! snoozy {
 
 		#[allow(dead_code)]
 		pub fn $name($($arg: $argtype),*) -> SnoozyRef<$ret> {
-			lazy_static! {
-				static ref op_source_hash: u64 = calculate_hash(&stringify!($body));
-			}
+            static mut OP_SOURCE_HASH: u64 = 0;
+            let op_source_hash = unsafe {
+                if 0 == OP_SOURCE_HASH {
+                    OP_SOURCE_HASH = calculate_hash(&stringify!($body));
+                }
+
+                OP_SOURCE_HASH
+            };
 
 			use snoozy::*;
-			def($name::op_struct::$name { $($arg: $arg),* }, *op_source_hash)
+			def($name::op_struct::$name { $($arg: $arg),* }, op_source_hash)
 		}
 	}
 }

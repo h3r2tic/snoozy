@@ -106,7 +106,7 @@ impl Context {
             },
             None => Err(format_err!(
                 "Requested asset {:?} failed to build",
-                asset_ref
+                opaque_ref
             )),
         }
 
@@ -121,7 +121,7 @@ impl Context {
     }
 }
 
-pub trait Op: Send + 'static + fmt::Debug {
+pub trait Op: Send + 'static {
     type Res;
 
     fn run(&self, ctx: &mut Context) -> Result<Self::Res>;
@@ -232,7 +232,6 @@ impl Scope {
 #[derive(Default)]
 struct BuildRecord {
     build_succeeded: bool,
-
     latest_result: bool,
 }
 
@@ -579,7 +578,7 @@ impl Snapshot {
                 Ok(res) => res.clone().downcast::<Res>().unwrap(),
                 Err(s) => panic!(err_msg(s.clone())),
             },
-            None => panic!("Requested asset {:?} failed to build", asset_ref),
+            None => panic!("Requested asset {:?} failed to build", opaque_ref),
         }
     }
 }
