@@ -15,7 +15,6 @@ mod macros;
 use serde::ser::SerializeTuple;
 
 use std::any::{Any, TypeId};
-use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::default::Default;
 use std::fmt;
@@ -24,6 +23,7 @@ use std::iter::FromIterator;
 use std::marker::PhantomData;
 use std::mem::transmute;
 use std::sync::{Arc, Mutex, RwLock};
+use twox_hash::XxHash;
 
 pub use failure::{err_msg, Error};
 pub type Result<T> = std::result::Result<T, Error>;
@@ -34,7 +34,7 @@ pub trait WeakHash {
 
 impl<T: Hash> WeakHash for T {
     fn weak_hash(&self) -> u64 {
-        let mut s = DefaultHasher::new();
+        let mut s = XxHash::default();
         <Self as std::hash::Hash>::hash(self, &mut s);
         s.finish()
     }
@@ -173,11 +173,7 @@ impl<Res> fmt::Debug for SnoozyRef<Res> {
 #[cfg(not(core_intrinsics))]
 impl<Res> fmt::Debug for SnoozyRef<Res> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "SnoozyRef {{identity_hash: {}}}",
-            self.identity_hash
-        )
+        write!(f, "SnoozyRef {{identity_hash: {}}}", self.identity_hash)
     }
 }
 
@@ -421,20 +417,21 @@ impl AssetReg {
 }
 
 pub fn calculate_hash<T: Hash>(t: &T) -> u64 {
-    let mut s = DefaultHasher::new();
+    let mut s = XxHash::default();
     t.hash(&mut s);
     s.finish()
 }
 
 pub fn calculate_serialized_hash<T: serde::Serialize>(t: &T) -> u64 {
-    let mut s = DefaultHasher::new();
+    let mut s = XxHash::default();
     let encoded: Vec<u8> = bincode::serialize(&t).unwrap();
     encoded.hash(&mut s);
     s.finish()
 }
 
 pub fn def<AssetType: 'static + Send + Sync, OpType: Op<Res = AssetType> + RecipeHash>(
-    op: OpType, op_source_hash: u64,
+    op: OpType,
+    op_source_hash: u64,
 ) -> SnoozyRef<AssetType> {
     def_named(op.recipe_hash() ^ op_source_hash, op)
 }
@@ -562,7 +559,7 @@ impl Snapshot {
     }
 }*/
 
-pub fn with_snapshot<F, Ret>(mut callback: F) -> Ret
+pub fn with_snapshot<F, Ret>(callback: F) -> Ret
 where
     F: FnOnce(&mut Snapshot) -> Ret,
 {
