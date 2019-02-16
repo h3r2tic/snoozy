@@ -14,6 +14,7 @@ extern crate lazy_static;
 mod macros;
 
 use serde::ser::SerializeTuple;
+use serde::{Serialize, Serializer};
 
 use std::any::{Any, TypeId};
 use std::collections::{HashMap, HashSet};
@@ -24,9 +25,9 @@ use std::iter::FromIterator;
 use std::marker::PhantomData;
 use std::mem::transmute;
 use std::sync::{Arc, Mutex, RwLock};
-use twox_hash::XxHash;
 
 pub use failure::{err_msg, Error};
+pub use twox_hash::XxHash as DefaultSnoozyHash;
 pub type Result<T> = std::result::Result<T, Error>;
 
 pub trait WeakHash {
@@ -35,14 +36,10 @@ pub trait WeakHash {
 
 impl<T: Hash> WeakHash for T {
     fn weak_hash(&self) -> u64 {
-        let mut s = XxHash::default();
+        let mut s = DefaultSnoozyHash::default();
         <Self as std::hash::Hash>::hash(self, &mut s);
         s.finish()
     }
-}
-
-pub trait RecipeHash {
-    fn recipe_hash(&self) -> u64;
 }
 
 pub struct Context {
@@ -184,10 +181,10 @@ pub struct OpaqueSnoozyRef {
     type_id: TypeId,
 }
 
-impl serde::Serialize for OpaqueSnoozyRef {
+impl Serialize for OpaqueSnoozyRef {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
-        S: serde::Serializer,
+        S: Serializer,
     {
         let mut tup = serializer.serialize_tuple(2)?;
         tup.serialize_element(&self.identity_hash)?;
@@ -417,24 +414,93 @@ impl AssetReg {
 }
 
 pub fn calculate_hash<T: Hash>(t: &T) -> u64 {
-    let mut s = XxHash::default();
+    let mut s = DefaultSnoozyHash::default();
     t.hash(&mut s);
     s.finish()
 }
 
 pub fn get_type_hash<T: 'static>() -> u64 {
-    let mut s = XxHash::default();
+    let mut s = DefaultSnoozyHash::default();
     std::any::TypeId::of::<T>().hash(&mut s);
     s.finish()
 }
 
-pub trait PodVecHash {
-    fn pod_vec_hash(&self) -> Option<u64>;
+macro_rules! declare_optional_hash {
+    ($tname:ident, $fname:ident, $impl_for:ty,  [$($req_traits:tt),*], $code:expr) => {
+        pub trait $tname {
+            fn $fname<H: Hasher>(&self, state: &mut H) -> bool;
+        }
+
+        impl<T> $tname for T {
+            default fn $fname<H: Hasher>(&self, _state: &mut H) -> bool {
+                false
+            }
+        }
+
+        impl<T> $tname for $impl_for
+        where
+            T: $($req_traits+)*,
+        {
+            fn $fname<H: Hasher>(&self, state: &mut H) -> bool {
+                $code(self, state);
+                true
+            }
+        }
+    };
+}
+
+declare_optional_hash!(
+    PodVecHash,
+    pod_vec_hash,
+    Vec<T>,
+    [Copy, Sized],
+    |item: &Vec<T>, state| unsafe {
+        let p = item.as_ptr();
+        let item_sizeof = std::mem::size_of::<T>();
+        let len = item.len() * item_sizeof;
+        std::slice::from_raw_parts(p as *const u8, len).hash(state);
+    }
+);
+
+declare_optional_hash!(
+    SerdeSerializedHash,
+    serde_serialized_hash,
+    T,
+    [Serialize],
+    |item: &T, state| {
+        let encoded: Vec<u8> = bincode::serialize(item).unwrap();
+        encoded.hash(state);
+    }
+);
+
+declare_optional_hash!(
+    PlainOldDataHash,
+    plain_old_data_hash,
+    T,
+    [Copy],
+    |item: &T, state| {
+        let p = item as *const T as *const u8;
+        unsafe {
+            std::slice::from_raw_parts(p, std::mem::size_of::<T>()).hash(state);
+        }
+    }
+);
+
+declare_optional_hash!(
+    BuiltInRustHash,
+    built_in_rust_hash,
+    T,
+    [Hash],
+    <T as Hash>::hash
+);
+
+/*pub trait PodVecHash {
+    fn pod_vec_hash<H: Hasher>(&self, state: &mut H) -> bool;
 }
 
 impl<T> PodVecHash for T {
-    default fn pod_vec_hash(&self) -> Option<u64> {
-        None
+    default fn pod_vec_hash<H: Hasher>(&self, _state: &mut H) -> bool {
+        false
     }
 }
 
@@ -442,55 +508,57 @@ impl<T> PodVecHash for Vec<T>
 where
     T: Copy,
 {
-    fn pod_vec_hash(&self) -> Option<u64> {
+    fn pod_vec_hash<H: Hasher>(&self, state: &mut H) -> bool {
         //let time0 = std::time::Instant::now();
 
-        let mut s = XxHash::default();
+        //let mut s = DefaultSnoozyHash::default();
         unsafe {
             let p = self.as_ptr();
             let item_sizeof = std::mem::size_of::<T>();
             let len = self.len() * item_sizeof;
-            std::slice::from_raw_parts(p as *const u8, len).hash(&mut s);
+            std::slice::from_raw_parts(p as *const u8, len).hash(state);
         }
         //println!("[fast path] Hash calculated in {:?}", time0.elapsed());
 
-        Some(s.finish())
+        //Some(s.finish())
+        true
     }
 }
 
 pub trait SerdeSerializedHash {
-    fn serde_serialized_hash(&self) -> Option<u64>;
+    fn serde_serialized_hash<H: Hasher>(&self, state: &mut H) -> bool;
 }
 
 impl<T> SerdeSerializedHash for T {
-    default fn serde_serialized_hash(&self) -> Option<u64> {
-        None
+    default fn serde_serialized_hash<H: Hasher>(&self, _state: &mut H) -> bool {
+        false
     }
 }
 
 impl<T> SerdeSerializedHash for T
 where
-    T: serde::Serialize,
+    T: Serialize,
 {
-    fn serde_serialized_hash(&self) -> Option<u64> {
+    fn serde_serialized_hash<H: Hasher>(&self, state: &mut H) -> bool {
         //let time0 = std::time::Instant::now();
-        let mut s = XxHash::default();
+        //let mut s = DefaultSnoozyHash::default();
         let encoded: Vec<u8> = bincode::serialize(self).unwrap();
         //println!("Hashable data serialized in {:?}", time0.elapsed());
         //let time0 = std::time::Instant::now();
-        encoded.hash(&mut s);
+        encoded.hash(state);
         //println!("Hash calculated in {:?}", time0.elapsed());
-        Some(s.finish())
+        //Some(s.finish())
+        true
     }
 }
 
 pub trait PlainOldDataHash {
-    fn plain_old_data_hash(&self) -> Option<u64>;
+    fn plain_old_data_hash<H: Hasher>(&self, state: &mut H) -> bool;
 }
 
 impl<T> PlainOldDataHash for T {
-    default fn plain_old_data_hash(&self) -> Option<u64> {
-        None
+    default fn plain_old_data_hash<H: Hasher>(&self, _state: &mut H) -> bool {
+        false
     }
 }
 
@@ -498,21 +566,24 @@ impl<T> PlainOldDataHash for T
 where
     T: Copy,
 {
-    fn plain_old_data_hash(&self) -> Option<u64> {
-        let mut s = XxHash::default();
-        let p = self as *const Self as *const u8;
-        unsafe { std::slice::from_raw_parts(p, std::mem::size_of::<Self>()).hash(&mut s) };
-        Some(s.finish())
+    fn plain_old_data_hash<H: Hasher>(&self, state: &mut H) -> bool {
+        //let mut s = DefaultSnoozyHash::default();
+        let p = self as *const T as *const u8;
+        unsafe {
+            std::slice::from_raw_parts(p, std::mem::size_of::<T>()).hash(state);
+        }
+        //Some(s.finish())
+        true
     }
 }
 
 pub trait BuiltInRustHash {
-    fn built_in_rust_hash(&self) -> Option<u64>;
+    fn built_in_rust_hash<H: Hasher>(&self, state: &mut H) -> bool;
 }
 
 impl<T> BuiltInRustHash for T {
-    default fn built_in_rust_hash(&self) -> Option<u64> {
-        None
+    default fn built_in_rust_hash<H: Hasher>(&self, _state: &mut H) -> bool {
+        false
     }
 }
 
@@ -520,41 +591,42 @@ impl<T> BuiltInRustHash for T
 where
     T: Hash,
 {
-    fn built_in_rust_hash(&self) -> Option<u64> {
-        let mut s = XxHash::default();
-        self.hash(&mut s);
-        Some(s.finish())
+    fn built_in_rust_hash<H: Hasher>(&self, state: &mut H) -> bool {
+        //let mut s = DefaultSnoozyHash::default();
+        self.hash(state);
+        //Some(s.finish())
+        true
     }
-}
+}*/
 
-pub fn calculate_serialized_hash<T: 'static>(t: &T) -> u64 {
-    if let Some(h) = BuiltInRustHash::built_in_rust_hash(t) {
-        h
-    } else if let Some(h) = PodVecHash::pod_vec_hash(t) {
-        h
-    } else if let Some(h) = PlainOldDataHash::plain_old_data_hash(t) {
-        h
-    } else if let Some(h) = SerdeSerializedHash::serde_serialized_hash(t) {
-        h
-    } else {
+pub fn calculate_serialized_hash<T: 'static, H: Hasher>(t: &T, state: &mut H) {
+    let hashed = BuiltInRustHash::built_in_rust_hash(t, state)
+        || PodVecHash::pod_vec_hash(t, state)
+        || PlainOldDataHash::plain_old_data_hash(t, state)
+        || SerdeSerializedHash::serde_serialized_hash(t, state);
+
+    if !hashed {
         panic!("No appropriate hash function found for {}", unsafe {
             std::intrinsics::type_name::<T>()
         });
     }
 }
 
-pub fn def<AssetType: 'static + Send + Sync, OpType: Op<Res = AssetType> + RecipeHash>(
+pub fn def<AssetType: 'static + Send + Sync, OpType: Op<Res = AssetType> + Hash>(
     op: OpType,
-    op_source_hash: u64,
 ) -> SnoozyRef<AssetType> {
-    def_named(op.recipe_hash() ^ op_source_hash, op)
+    let mut s = DefaultSnoozyHash::default();
+    <OpType as std::hash::Hash>::hash(&op, &mut s);
+    def_named(s.finish(), op)
 }
 
-pub fn def_named<AssetType: 'static + Send + Sync, OpType: Op<Res = AssetType> + RecipeHash>(
+pub fn def_named<AssetType: 'static + Send + Sync, OpType: Op<Res = AssetType> + Hash>(
     identity_hash: u64,
     op: OpType,
 ) -> SnoozyRef<AssetType> {
-    let recipe_hash = op.recipe_hash();
+    let mut s = DefaultSnoozyHash::default();
+    <OpType as std::hash::Hash>::hash(&op, &mut s);
+    let recipe_hash = s.finish();
 
     let res = SnoozyRef::<AssetType> {
         identity_hash,
@@ -617,7 +689,7 @@ pub fn def_named<AssetType: 'static + Send + Sync, OpType: Op<Res = AssetType> +
     res
 }
 
-pub fn def_initial<AssetType: 'static + Send + Sync, OpType: Op<Res = AssetType> + RecipeHash>(
+pub fn def_initial<AssetType: 'static + Send + Sync, OpType: Op<Res = AssetType> + Hash>(
     identity_hash: u64,
     op: OpType,
 ) -> SnoozyRef<AssetType> {
