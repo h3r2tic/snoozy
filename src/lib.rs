@@ -249,7 +249,6 @@ impl Default for BuildRecord {
 struct RecipeInfo {
     recipe_runner: Arc<(Fn(&mut Context) -> Result<Arc<Any + Send + Sync>>) + Send + Sync>,
     build_result: Option<std::result::Result<Arc<Any + Send + Sync>, String>>,
-    build_succeeded: bool,
     rebuild_pending: bool,
     // Assets this one requested during the last build
     dependencies: Vec<OpaqueSnoozyRef>,
@@ -328,7 +327,7 @@ impl AssetReg {
             let recipe_info = recipe_info_lock.write().unwrap();
 
             (
-                recipe_info.build_succeeded,
+                recipe_info.build_result.is_some(),
                 recipe_info.rebuild_pending,
                 recipe_info.recipe_runner.clone(),
             )
@@ -396,13 +395,12 @@ impl AssetReg {
                         dep_recipe_info.reverse_dependencies.insert(opaque_ref);
                     }
 
-                    recipe_info.build_succeeded = true;
                     recipe_info.rebuild_pending = false;
                     recipe_info.dependencies = ctx.dependencies;
                 }
                 Err(err) => {
                     // Build failed, but unless anything changes, this is what we're stuck with
-                    recipe_info.rebuild_pending = true;
+                    recipe_info.rebuild_pending = false;
 
                     //println!("Error building asset {:?}: {}", opaque_ref, err);
                     println!("Error building asset: {}", err);
@@ -554,7 +552,6 @@ pub fn def_named<AssetType: 'static + Send + Sync, OpType: Op<Res = AssetType> +
                     Arc::new(RwLock::new(RecipeInfo {
                         recipe_runner: make_recipe_runner(),
                         build_result: None,
-                        build_succeeded: false,
                         rebuild_pending: true,
                         dependencies: Vec::new(),
                         reverse_dependencies: HashSet::new(),
@@ -568,7 +565,6 @@ pub fn def_named<AssetType: 'static + Send + Sync, OpType: Op<Res = AssetType> +
                 if entry.recipe_hash != recipe_hash {
                     // Hash differs. Update the definition, but keep the last build result
                     entry.recipe_runner = make_recipe_runner();
-                    entry.build_succeeded = true;
                     entry.rebuild_pending = false;
                     entry.recipe_hash = recipe_hash;
 
