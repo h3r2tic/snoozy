@@ -127,6 +127,12 @@ pub trait Op: Send + 'static {
     fn run(&self, ctx: &mut Context) -> Result<Self::Res>;
 }
 
+pub trait SnoozyNamedOp {
+    type Res;
+    fn def_named_initial(identity_hash: u64, init_value: Self) -> SnoozyRef<Self::Res>;
+    fn redef_named(identity_hash: u64, new_value: Self);
+}
+
 #[derive(Default, Clone, Copy, Hash, Eq, PartialEq)]
 pub struct ScopeId(u64);
 
