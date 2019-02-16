@@ -1,6 +1,9 @@
 #![feature(specialization)]
 #![feature(core_intrinsics)]
 
+mod whatever_hash;
+pub use whatever_hash::whatever_hash;
+
 #[macro_use]
 extern crate serde_derive;
 #[macro_use]
@@ -56,23 +59,6 @@ impl Context {
         }
     }
 
-    /*fn with<Res: 'static, FnRet>(&self, asset_ref: &SnoozyRef<Res>, sink: &mut FnMut(&Res) -> FnRet) -> FnRet {
-        //unreachable!()	// TODO
-
-        let opaque_ref : OpaqueSnoozyRef = (*asset_ref).into();
-
-        let entry = ASSET_REG.lock().unwrap().recipe_info.get(&opaque_ref).unwrap().clone();
-        let res = (entry.lock().unwrap().recipe_runner)();
-        entry.lock().unwrap().build_result = Some(res);
-
-        let res = match entry.lock().unwrap().build_result.as_ref().unwrap().downcast_ref::<Res>() {
-            Some(as_res) => sink(as_res),
-            None => unreachable!(),
-        };
-
-        res
-    }*/
-
     pub fn get<Res: 'static + Send + Sync, SnoozyT: Into<SnoozyRef<Res>>>(
         &mut self,
         asset_ref: SnoozyT,
@@ -92,7 +78,7 @@ impl Context {
             .clone();
         let recipe_info = recipe_info_lock.read().unwrap();
 
-        match recipe_info.build_result {
+        match recipe_info.last_valid_build_result {
             Some(ref res) => match res {
                 Ok(res) => Ok(res.clone().downcast::<Res>().unwrap()),
                 Err(s) => Err(err_msg(s.clone())),
@@ -102,15 +88,6 @@ impl Context {
                 opaque_ref
             )),
         }
-
-        /*let res: Arc<Res> = recipe_info
-            .build_result
-            .as_ref()
-            .unwrap()
-            .clone()
-            .downcast::<Res>()
-            .unwrap();
-        res*/
     }
 }
 
@@ -197,7 +174,7 @@ impl<Res: 'static> Into<OpaqueSnoozyRef> for SnoozyRef<Res> {
 
 struct RecipeInfo {
     recipe_runner: Arc<(Fn(&mut Context) -> Result<Arc<Any + Send + Sync>>) + Send + Sync>,
-    build_result: Option<std::result::Result<Arc<Any + Send + Sync>, String>>,
+    last_valid_build_result: Option<std::result::Result<Arc<Any + Send + Sync>, String>>,
     rebuild_pending: bool,
     // Assets this one requested during the last build
     dependencies: Vec<OpaqueSnoozyRef>,
@@ -300,7 +277,7 @@ impl AssetReg {
 
             match res_or_err {
                 Ok(res) => {
-                    recipe_info.build_result = Some(Ok(res));
+                    recipe_info.last_valid_build_result = Some(Ok(res));
 
                     //println!("Published build result for asset {:?}", opaque_ref);
 
@@ -371,88 +348,6 @@ pub fn get_type_hash<T: 'static>() -> u64 {
     s.finish()
 }
 
-macro_rules! declare_optional_hash {
-    ($tname:ident, $fname:ident, $impl_for:ty,  [$($req_traits:tt),*], $code:expr) => {
-        pub trait $tname {
-            fn $fname<H: Hasher>(&self, state: &mut H) -> bool;
-        }
-
-        impl<T> $tname for T {
-            default fn $fname<H: Hasher>(&self, _state: &mut H) -> bool {
-                false
-            }
-        }
-
-        impl<T> $tname for $impl_for
-        where
-            T: $($req_traits+)*,
-        {
-            fn $fname<H: Hasher>(&self, state: &mut H) -> bool {
-                $code(self, state);
-                true
-            }
-        }
-    };
-}
-
-declare_optional_hash!(
-    PodVecHash,
-    pod_vec_hash,
-    Vec<T>,
-    [Copy, Sized],
-    |item: &Vec<T>, state| unsafe {
-        let p = item.as_ptr();
-        let item_sizeof = std::mem::size_of::<T>();
-        let len = item.len() * item_sizeof;
-        std::slice::from_raw_parts(p as *const u8, len).hash(state);
-    }
-);
-
-declare_optional_hash!(
-    SerdeSerializedHash,
-    serde_serialized_hash,
-    T,
-    [Serialize],
-    |item: &T, state| {
-        let encoded: Vec<u8> = bincode::serialize(item).unwrap();
-        encoded.hash(state);
-    }
-);
-
-declare_optional_hash!(
-    PlainOldDataHash,
-    plain_old_data_hash,
-    T,
-    [Copy],
-    |item: &T, state| {
-        let p = item as *const T as *const u8;
-        unsafe {
-            std::slice::from_raw_parts(p, std::mem::size_of::<T>()).hash(state);
-        }
-    }
-);
-
-declare_optional_hash!(
-    BuiltInRustHash,
-    built_in_rust_hash,
-    T,
-    [Hash],
-    <T as Hash>::hash
-);
-
-pub fn calculate_serialized_hash<T: 'static, H: Hasher>(t: &T, state: &mut H) {
-    let hashed = BuiltInRustHash::built_in_rust_hash(t, state)
-        || PodVecHash::pod_vec_hash(t, state)
-        || PlainOldDataHash::plain_old_data_hash(t, state)
-        || SerdeSerializedHash::serde_serialized_hash(t, state);
-
-    if !hashed {
-        panic!("No appropriate hash function found for {}", unsafe {
-            std::intrinsics::type_name::<T>()
-        });
-    }
-}
-
 pub fn def<AssetType: 'static + Send + Sync, OpType: Op<Res = AssetType> + Hash>(
     op: OpType,
 ) -> SnoozyRef<AssetType> {
@@ -493,7 +388,7 @@ pub fn def_named<AssetType: 'static + Send + Sync, OpType: Op<Res = AssetType> +
                     res.into(),
                     Arc::new(RwLock::new(RecipeInfo {
                         recipe_runner: make_recipe_runner(),
-                        build_result: None,
+                        last_valid_build_result: None,
                         rebuild_pending: true,
                         dependencies: Vec::new(),
                         reverse_dependencies: HashSet::new(),
@@ -541,19 +436,6 @@ pub fn def_initial<AssetType: 'static + Send + Sync, OpType: Op<Res = AssetType>
 
 pub struct Snapshot;
 impl Snapshot {
-    /*fn with<Res: 'static, F: FnOnce(&Res)>(&self, asset_ref: &SnoozyRef<Res>, sink: F) {
-        let opaque_ref : OpaqueSnoozyRef = (*asset_ref).into();
-
-        let entry = ASSET_REG.lock().unwrap().recipe_info.get(&opaque_ref).unwrap().clone();
-        let res = (entry.lock().unwrap().recipe_runner)();
-        entry.lock().unwrap().build_result = Some(res);
-
-        match entry.lock().unwrap().build_result.as_ref().unwrap().downcast_ref::<Res>() {
-            Some(as_res) => sink(as_res),
-            None => unreachable!(),
-        };
-    }*/
-
     pub fn get<Res: 'static + Send + Sync>(&self, asset_ref: SnoozyRef<Res>) -> Arc<Res> {
         let opaque_ref: OpaqueSnoozyRef = asset_ref.into();
 
@@ -568,7 +450,7 @@ impl Snapshot {
             .clone();
         let recipe_info = recipe_info_lock.read().unwrap();
 
-        match recipe_info.build_result {
+        match recipe_info.last_valid_build_result {
             Some(ref res) => match res {
                 Ok(res) => res.clone().downcast::<Res>().unwrap(),
                 Err(s) => panic!(err_msg(s.clone())),
@@ -577,14 +459,6 @@ impl Snapshot {
         }
     }
 }
-
-/*impl<Res: 'static + Send + Sync> std::ops::Div<SnoozyRef<Res>> for &mut Snapshot {
-    type Output = Arc<Res>;
-
-    fn div(self, rhs: SnoozyRef<Res>) -> Arc<Res> {
-        self.get(rhs)
-    }
-}*/
 
 pub fn with_snapshot<F, Ret>(callback: F) -> Ret
 where
