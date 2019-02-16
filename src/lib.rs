@@ -81,11 +81,7 @@ impl Context {
         let opaque_ref: OpaqueSnoozyRef = asset_ref.into();
 
         self.dependencies.push(opaque_ref);
-        let eval_success = ASSET_REG.evaluate_recipe(opaque_ref);
-
-        if !eval_success {
-            return Err(err_msg("Dependent asset build failed"));
-        }
+        ASSET_REG.evaluate_recipe(opaque_ref);
 
         let recipe_info_lock = ASSET_REG
             .recipe_info
@@ -256,12 +252,12 @@ impl AssetReg {
         }
     }
 
-    fn evaluate_recipe(&self, opaque_ref: OpaqueSnoozyRef) -> bool {
+    fn evaluate_recipe(&self, opaque_ref: OpaqueSnoozyRef) {
         //println!("evaluate recipe {:?}", opaque_ref);
 
         if self.being_evaluated.lock().unwrap()[&opaque_ref] {
             //println!("recipe already being evaluated");
-            return true;
+            return;
         }
 
         self.being_evaluated
@@ -269,7 +265,7 @@ impl AssetReg {
             .unwrap()
             .insert(opaque_ref, true);
 
-        let (last_build_succeeded, needs_evaluation, recipe_runner) = {
+        let (rebuild_pending, recipe_runner) = {
             let recipe_info_lock = self
                 .recipe_info
                 .lock()
@@ -280,15 +276,12 @@ impl AssetReg {
             let recipe_info = recipe_info_lock.write().unwrap();
 
             (
-                recipe_info.build_result.is_some(),
                 recipe_info.rebuild_pending,
                 recipe_info.recipe_runner.clone(),
             )
         };
 
-        let mut success = last_build_succeeded && !needs_evaluation;
-
-        if needs_evaluation {
+        if rebuild_pending {
             let mut ctx = Context {
                 opaque_ref,
                 dependencies: Vec::new(),
@@ -310,8 +303,6 @@ impl AssetReg {
                     recipe_info.build_result = Some(Ok(res));
 
                     //println!("Published build result for asset {:?}", opaque_ref);
-
-                    success = true;
 
                     let previous_dependencies: HashSet<OpaqueSnoozyRef> =
                         HashSet::from_iter(recipe_info.dependencies.iter().cloned());
@@ -365,8 +356,6 @@ impl AssetReg {
             .lock()
             .unwrap()
             .insert(opaque_ref, false);
-
-        success
     }
 }
 
