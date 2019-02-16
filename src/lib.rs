@@ -1,5 +1,5 @@
 #![feature(specialization)]
-#![cfg_attr(feature = "core_intrinsics", feature(core_intrinsics))]
+#![feature(core_intrinsics)]
 
 #[macro_use]
 extern crate serde_derive;
@@ -422,6 +422,12 @@ pub fn calculate_hash<T: Hash>(t: &T) -> u64 {
     s.finish()
 }
 
+pub fn get_type_hash<T: 'static>() -> u64 {
+    let mut s = XxHash::default();
+    std::any::TypeId::of::<T>().hash(&mut s);
+    s.finish()
+}
+
 pub trait PodVecHash {
     fn pod_vec_hash(&self) -> Option<u64>;
 }
@@ -452,18 +458,88 @@ where
     }
 }
 
-pub fn calculate_serialized_hash<T: serde::Serialize>(t: &T) -> u64 {
-    if let Some(h) = PodVecHash::pod_vec_hash(t) {
-        h
-    } else {
+pub trait SerdeSerializedHash {
+    fn serde_serialized_hash(&self) -> Option<u64>;
+}
+
+impl<T> SerdeSerializedHash for T {
+    default fn serde_serialized_hash(&self) -> Option<u64> {
+        None
+    }
+}
+
+impl<T> SerdeSerializedHash for T
+where
+    T: serde::Serialize,
+{
+    fn serde_serialized_hash(&self) -> Option<u64> {
         //let time0 = std::time::Instant::now();
         let mut s = XxHash::default();
-        let encoded: Vec<u8> = bincode::serialize(&t).unwrap();
+        let encoded: Vec<u8> = bincode::serialize(self).unwrap();
         //println!("Hashable data serialized in {:?}", time0.elapsed());
         //let time0 = std::time::Instant::now();
         encoded.hash(&mut s);
         //println!("Hash calculated in {:?}", time0.elapsed());
-        s.finish()
+        Some(s.finish())
+    }
+}
+
+pub trait PlainOldDataHash {
+    fn plain_old_data_hash(&self) -> Option<u64>;
+}
+
+impl<T> PlainOldDataHash for T {
+    default fn plain_old_data_hash(&self) -> Option<u64> {
+        None
+    }
+}
+
+impl<T> PlainOldDataHash for T
+where
+    T: Copy,
+{
+    fn plain_old_data_hash(&self) -> Option<u64> {
+        let mut s = XxHash::default();
+        let p = self as *const Self as *const u8;
+        unsafe { std::slice::from_raw_parts(p, std::mem::size_of::<Self>()).hash(&mut s) };
+        Some(s.finish())
+    }
+}
+
+pub trait BuiltInRustHash {
+    fn built_in_rust_hash(&self) -> Option<u64>;
+}
+
+impl<T> BuiltInRustHash for T {
+    default fn built_in_rust_hash(&self) -> Option<u64> {
+        None
+    }
+}
+
+impl<T> BuiltInRustHash for T
+where
+    T: Hash,
+{
+    fn built_in_rust_hash(&self) -> Option<u64> {
+        let mut s = XxHash::default();
+        self.hash(&mut s);
+        Some(s.finish())
+    }
+}
+
+pub fn calculate_serialized_hash<T: 'static>(t: &T) -> u64 {
+    if let Some(h) = BuiltInRustHash::built_in_rust_hash(t) {
+        h
+    } else if let Some(h) = PodVecHash::pod_vec_hash(t) {
+        h
+    } else if let Some(h) = PlainOldDataHash::plain_old_data_hash(t) {
+        h
+    } else if let Some(h) = SerdeSerializedHash::serde_serialized_hash(t) {
+        h
+    } else {
+        panic!("No appropriate hash function found for {}", unsafe {
+            std::intrinsics::type_name::<T>()
+        });
     }
 }
 
