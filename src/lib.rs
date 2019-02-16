@@ -79,10 +79,7 @@ impl Context {
         let recipe_info = recipe_info_lock.read().unwrap();
 
         match recipe_info.last_valid_build_result {
-            Some(ref res) => match res {
-                Ok(res) => Ok(res.clone().downcast::<Res>().unwrap()),
-                Err(s) => Err(err_msg(s.clone())),
-            },
+            Some(ref res) => Ok(res.clone().downcast::<Res>().unwrap()),
             None => Err(format_err!(
                 "Requested asset {:?} failed to build",
                 opaque_ref
@@ -174,7 +171,7 @@ impl<Res: 'static> Into<OpaqueSnoozyRef> for SnoozyRef<Res> {
 
 struct RecipeInfo {
     recipe_runner: Arc<(Fn(&mut Context) -> Result<Arc<Any + Send + Sync>>) + Send + Sync>,
-    last_valid_build_result: Option<std::result::Result<Arc<Any + Send + Sync>, String>>,
+    last_valid_build_result: Option<Arc<Any + Send + Sync>>,
     rebuild_pending: bool,
     // Assets this one requested during the last build
     dependencies: Vec<OpaqueSnoozyRef>,
@@ -277,7 +274,7 @@ impl AssetReg {
 
             match res_or_err {
                 Ok(res) => {
-                    recipe_info.last_valid_build_result = Some(Ok(res));
+                    recipe_info.last_valid_build_result = Some(res);
 
                     //println!("Published build result for asset {:?}", opaque_ref);
 
@@ -451,10 +448,7 @@ impl Snapshot {
         let recipe_info = recipe_info_lock.read().unwrap();
 
         match recipe_info.last_valid_build_result {
-            Some(ref res) => match res {
-                Ok(res) => res.clone().downcast::<Res>().unwrap(),
-                Err(s) => panic!(err_msg(s.clone())),
-            },
+            Some(ref res) => res.clone().downcast::<Res>().unwrap(),
             None => panic!("Requested asset {:?} failed to build", opaque_ref),
         }
     }
