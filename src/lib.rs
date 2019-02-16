@@ -232,16 +232,25 @@ impl Scope {
     };
 }*/
 
-#[derive(Default)]
-struct BuildRecord {
+/*struct BuildRecord {
     build_succeeded: bool,
-    latest_result: bool,
+    rebuild_pending: bool,
 }
+
+impl Default for BuildRecord {
+    fn default() -> Self {
+        Self {
+            build_succeeded: false,
+            rebuild_pending: true,
+        }
+    }
+}*/
 
 struct RecipeInfo {
     recipe_runner: Arc<(Fn(&mut Context) -> Result<Arc<Any + Send + Sync>>) + Send + Sync>,
     build_result: Option<std::result::Result<Arc<Any + Send + Sync>, String>>,
-    build_record: BuildRecord,
+    build_succeeded: bool,
+    rebuild_pending: bool,
     // Assets this one requested during the last build
     dependencies: Vec<OpaqueSnoozyRef>,
     // Assets that requested this asset during their builds
@@ -287,7 +296,7 @@ impl AssetReg {
         let mut rec = build_record_arc.write().unwrap();
 
         {
-            rec.build_record.latest_result = false;
+            rec.rebuild_pending = true;
 
             for dep in rec.reverse_dependencies.iter() {
                 self.invalidate_asset_tree(*dep);
@@ -319,8 +328,8 @@ impl AssetReg {
             let recipe_info = recipe_info_lock.write().unwrap();
 
             (
-                recipe_info.build_record.build_succeeded,
-                !recipe_info.build_record.latest_result,
+                recipe_info.build_succeeded,
+                recipe_info.rebuild_pending,
                 recipe_info.recipe_runner.clone(),
             )
         };
@@ -350,11 +359,7 @@ impl AssetReg {
 
                     //println!("Published build result for asset {:?}", opaque_ref);
 
-                    let mut build_record: BuildRecord = Default::default();
-
                     success = true;
-                    build_record.build_succeeded = true;
-                    build_record.latest_result = true;
 
                     let previous_dependencies: HashSet<OpaqueSnoozyRef> =
                         HashSet::from_iter(recipe_info.dependencies.iter().cloned());
@@ -391,12 +396,13 @@ impl AssetReg {
                         dep_recipe_info.reverse_dependencies.insert(opaque_ref);
                     }
 
-                    recipe_info.build_record = build_record;
+                    recipe_info.build_succeeded = true;
+                    recipe_info.rebuild_pending = false;
                     recipe_info.dependencies = ctx.dependencies;
                 }
                 Err(err) => {
                     // Build failed, but unless anything changes, this is what we're stuck with
-                    recipe_info.build_record.latest_result = true;
+                    recipe_info.rebuild_pending = true;
 
                     //println!("Error building asset {:?}: {}", opaque_ref, err);
                     println!("Error building asset: {}", err);
@@ -548,7 +554,8 @@ pub fn def_named<AssetType: 'static + Send + Sync, OpType: Op<Res = AssetType> +
                     Arc::new(RwLock::new(RecipeInfo {
                         recipe_runner: make_recipe_runner(),
                         build_result: None,
-                        build_record: Default::default(),
+                        build_succeeded: false,
+                        rebuild_pending: true,
                         dependencies: Vec::new(),
                         reverse_dependencies: HashSet::new(),
                         recipe_hash,
@@ -561,7 +568,8 @@ pub fn def_named<AssetType: 'static + Send + Sync, OpType: Op<Res = AssetType> +
                 if entry.recipe_hash != recipe_hash {
                     // Hash differs. Update the definition, but keep the last build result
                     entry.recipe_runner = make_recipe_runner();
-                    entry.build_record = Default::default();
+                    entry.build_succeeded = true;
+                    entry.rebuild_pending = false;
                     entry.recipe_hash = recipe_hash;
 
                     ASSET_REG
