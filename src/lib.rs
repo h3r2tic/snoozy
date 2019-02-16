@@ -130,9 +130,6 @@ pub trait SnoozyNamedOp {
     fn redef_named(identity_hash: u64, new_value: Self);
 }
 
-#[derive(Default, Clone, Copy, Hash, Eq, PartialEq)]
-pub struct ScopeId(u64);
-
 #[derive(Serialize, Hash)]
 pub struct SnoozyRef<Res> {
     pub identity_hash: u64,
@@ -201,50 +198,6 @@ impl<Res: 'static> Into<OpaqueSnoozyRef> for SnoozyRef<Res> {
         }
     }
 }
-
-pub struct Scope;
-
-impl Scope {
-    /*fn def<AssetType: WeakHash, OpType: Op<Res=AssetType>>(&mut self, op: OpType) -> SnoozyRef<AssetType> {
-        SnoozyRef::<AssetType> { phantom: PhantomData }
-    }*/
-
-    #[allow(dead_code)]
-    pub fn def<AssetType: 'static>(
-        &mut self,
-        asset_ref: SnoozyRef<AssetType>,
-    ) -> SnoozyRef<AssetType> {
-        // TODO: redefine here
-        let _opaque_ref: OpaqueSnoozyRef = asset_ref.into();
-        asset_ref
-    }
-
-    /*fn new() -> Scope {
-        Scope
-    }*/
-}
-
-/*lazy_static! {
-    static ref SCOPE_REG: HashMap<ScopeId, Box<Scope>> = {
-        let mut m = HashMap::new();
-        m.insert(ScopeId(0), Box::new(Scope::new()));
-        m
-    };
-}*/
-
-/*struct BuildRecord {
-    build_succeeded: bool,
-    rebuild_pending: bool,
-}
-
-impl Default for BuildRecord {
-    fn default() -> Self {
-        Self {
-            build_succeeded: false,
-            rebuild_pending: true,
-        }
-    }
-}*/
 
 struct RecipeInfo {
     recipe_runner: Arc<(Fn(&mut Context) -> Result<Arc<Any + Send + Sync>>) + Send + Sync>,
