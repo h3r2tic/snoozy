@@ -1,7 +1,16 @@
 #[macro_export]
 macro_rules! init_dynamic {
     ($name:ident ($($arg:expr),*)) => {
-        $name::def_named_initial(calculate_hash(&(file!(), line!(), column!())), $name::new($($arg),*))
+        {
+            let location = (file!(), line!(), column!());
+            let location_hash = {
+                let mut s = DefaultSnoozyHash::default();
+                std::hash::Hash::hash(&location, &mut s);
+                std::hash::Hasher::finish(&s)
+            };
+
+            $name::def_named_initial(location_hash, $name::new($($arg),*))
+        }
     }
 }
 
