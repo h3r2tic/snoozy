@@ -1,4 +1,3 @@
-//use super::DerpySerialization;
 use std::any::Any;
 use std::marker::PhantomData;
 
