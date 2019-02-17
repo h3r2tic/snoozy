@@ -6,6 +6,9 @@ mod iface;
 mod refs;
 mod whatever_hash;
 
+#[macro_use]
+mod macros;
+
 pub use asset_reg::AssetReg;
 pub use iface::*;
 pub use refs::{OpaqueSnoozyRef, SnoozyRef};
@@ -19,9 +22,6 @@ extern crate bincode;
 extern crate serde;
 #[macro_use]
 extern crate lazy_static;
-
-#[macro_use]
-mod macros;
 
 use std::default::Default;
 use std::hash::{Hash, Hasher};

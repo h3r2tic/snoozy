@@ -1,4 +1,4 @@
-use super::asset_reg::{RecipeInfo, ASSET_REG};
+use super::asset_reg::{RecipeBuildRecord, RecipeInfo, ASSET_REG};
 use super::refs::{OpaqueSnoozyRef, SnoozyRef};
 use super::{DefaultSnoozyHash, Result};
 use std::any::Any;
@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 pub struct Context {
     pub(crate) opaque_ref: OpaqueSnoozyRef, // Handle for the asset that this Context was created for
-    pub(crate) dependencies: Vec<OpaqueSnoozyRef>,
+    pub(crate) dependencies: HashSet<OpaqueSnoozyRef>,
 }
 
 impl Context {
@@ -27,21 +27,18 @@ impl Context {
         let asset_ref = asset_ref.into();
         let opaque_ref: OpaqueSnoozyRef = asset_ref.into();
 
-        self.dependencies.push(opaque_ref);
+        self.dependencies.insert(opaque_ref);
         ASSET_REG.evaluate_recipe(opaque_ref);
 
-        let recipe_info_lock = ASSET_REG
-            .recipe_info
-            .lock()
-            .unwrap()
-            .get(&opaque_ref)
-            .unwrap()
-            .clone();
-        let recipe_info = recipe_info_lock.read().unwrap();
+        let recipe_info = ASSET_REG.get_recipe_info_for_ref(opaque_ref);
+        let recipe_info = recipe_info.read().unwrap();
 
-        match recipe_info.last_valid_build_result {
-            Some(ref res) => Ok(res.clone().downcast::<Res>().unwrap()),
-            None => Err(format_err!(
+        match recipe_info.build_record {
+            Some(RecipeBuildRecord {
+                ref last_valid_build_result,
+                ..
+            }) => Ok(last_valid_build_result.clone().downcast::<Res>().unwrap()),
+            _ => Err(format_err!(
                 "Requested asset {:?} failed to build",
                 opaque_ref
             )),
@@ -98,10 +95,8 @@ pub fn def_named<AssetType: 'static + Send + Sync, OpType: Op<Res = AssetType> +
                     res.into(),
                     Arc::new(RwLock::new(RecipeInfo {
                         recipe_runner: make_recipe_runner(),
-                        last_valid_build_result: None,
                         rebuild_pending: true,
-                        dependencies: Vec::new(),
-                        reverse_dependencies: HashSet::new(),
+                        build_record: None,
                         recipe_hash,
                     })),
                 );
@@ -110,11 +105,13 @@ pub fn def_named<AssetType: 'static + Send + Sync, OpType: Op<Res = AssetType> +
             Some(entry) => {
                 let mut entry = entry.write().unwrap();
                 if entry.recipe_hash != recipe_hash {
-                    // Hash differs. Update the definition, but keep the last build result
+                    // Hash differs. Update the definition, but keep the last build record
                     entry.recipe_runner = make_recipe_runner();
-                    entry.rebuild_pending = false;
                     entry.recipe_hash = recipe_hash;
 
+                    // Clear any pending rebuild of this asset, and instead schedule
+                    // a full rebuild including of all of its reverse dependencies.
+                    entry.rebuild_pending = false;
                     ASSET_REG
                         .queued_asset_invalidations
                         .lock()
@@ -151,17 +148,14 @@ impl Snapshot {
 
         ASSET_REG.evaluate_recipe(opaque_ref);
 
-        let recipe_info_lock = ASSET_REG
-            .recipe_info
-            .lock()
-            .unwrap()
-            .get(&opaque_ref)
-            .unwrap()
-            .clone();
-        let recipe_info = recipe_info_lock.read().unwrap();
+        let recipe_info = ASSET_REG.get_recipe_info_for_ref(opaque_ref);
+        let recipe_info = recipe_info.read().unwrap();
 
-        match recipe_info.last_valid_build_result {
-            Some(ref res) => res.clone().downcast::<Res>().unwrap(),
+        match recipe_info.build_record {
+            Some(RecipeBuildRecord {
+                ref last_valid_build_result,
+                ..
+            }) => last_valid_build_result.clone().downcast::<Res>().unwrap(),
             None => panic!("Requested asset {:?} failed to build", opaque_ref),
         }
     }
