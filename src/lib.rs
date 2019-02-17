@@ -35,3 +35,8 @@ pub fn get_type_hash<T: 'static>() -> u64 {
     std::any::TypeId::of::<T>().hash(&mut s);
     s.finish()
 }
+
+pub trait DerpySerialization: Sized {
+    fn derpy_serialize(&self, s: &mut Vec<u8>) -> bool;
+    fn derpy_deserialize(s: &[u8]) -> Option<Self>;
+}

@@ -57,8 +57,8 @@ impl<Res> fmt::Debug for SnoozyRef<Res> {
 
 #[derive(Hash, Clone, Copy, Eq, PartialEq, Debug)]
 pub struct OpaqueSnoozyRef {
-    identity_hash: u64,
-    type_id: TypeId,
+    pub(crate) identity_hash: u64,
+    pub(crate) type_id: TypeId,
 }
 
 impl Serialize for OpaqueSnoozyRef {

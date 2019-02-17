@@ -4,6 +4,8 @@ use super::refs::OpaqueSnoozyRef;
 use super::Result;
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
+use std::fs::File;
+use std::io::{Read, Write};
 use std::sync::{Arc, Mutex, RwLock};
 
 pub struct RecipeBuildRecord {
@@ -14,23 +16,19 @@ pub struct RecipeBuildRecord {
     pub reverse_dependencies: HashSet<OpaqueSnoozyRef>,
 }
 
-pub(crate) type VecByteReader = std::io::Cursor<Vec<u8>>;
-pub(crate) type VecByteWriter = Vec<u8>;
-
 pub(crate) struct RecipeMeta {
     op_name: &'static str,
     result_type_name: &'static str,
-    serialize_proxy: Box<dyn AnySerialize<VecByteReader, VecByteWriter>>,
+    serialize_proxy: Box<dyn AnySerialize>,
 }
 
 impl RecipeMeta {
     pub fn new<'a, T>(op_name: &'static str) -> Self
     where
-        T: 'static + Send + Sync + MaybeSerialize<'a>,
+        T: 'static + Send + Sync + MaybeSerialize,
     {
         let serialize_proxy: Box<AnySerializeProxy<T>> = Box::new(AnySerializeProxy::new());
-        let serialize_proxy =
-            serialize_proxy as Box<dyn AnySerialize<VecByteReader, VecByteWriter>>;
+        let serialize_proxy = serialize_proxy as Box<dyn AnySerialize>;
 
         Self {
             result_type_name: unsafe { std::intrinsics::type_name::<T>() },
@@ -130,6 +128,75 @@ impl AssetReg {
         }
     }
 
+    fn cache_build_result(
+        &self,
+        opaque_ref: OpaqueSnoozyRef,
+        asset: &(dyn Any + Send + Sync),
+        recipe_info: &RecipeInfo,
+    ) {
+        let serialize_proxy = &*recipe_info.recipe_meta.serialize_proxy as &dyn AnySerialize;
+
+        if !serialize_proxy.does_support_serialization() {
+            return;
+        }
+
+        println!(
+            "The result ({}) supports serialization, and we'll cache it.",
+            recipe_info.recipe_meta.result_type_name
+        );
+
+        let _ = std::fs::create_dir(".cache");
+
+        let t0 = std::time::Instant::now();
+
+        let mut data: Vec<u8> = Vec::new();
+        serialize_proxy.try_serialize(asset, &mut data);
+
+        println!(
+            "Serialized into {} in {:?}",
+            pretty_bytes::converter::convert(data.len() as f64),
+            t0.elapsed()
+        );
+
+        let path = format!(".cache/{:x}.bin", opaque_ref.identity_hash);
+        let mut f = File::create(&path).expect("Unable to create file");
+        if !f.write_all(data.as_slice()).is_ok() {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    fn get_cached_build_result(
+        &self,
+        opaque_ref: OpaqueSnoozyRef,
+        recipe_info: &RecipeInfo,
+    ) -> Option<Arc<dyn Any + Send + Sync>> {
+        let serialize_proxy = &*recipe_info.recipe_meta.serialize_proxy as &dyn AnySerialize;
+
+        if !serialize_proxy.does_support_serialization() {
+            return None;
+        }
+
+        let t0 = std::time::Instant::now();
+
+        let path = format!(".cache/{:x}.bin", opaque_ref.identity_hash);
+
+        let result = if let Ok(mut f) = File::open(&path) {
+            let mut buffer = Vec::new();
+
+            if f.read_to_end(&mut buffer).is_ok() {
+                let result = serialize_proxy.try_deserialize(&mut buffer);
+                println!("Deserialized in {:?}", t0.elapsed());
+                result
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        result.map(|x| Arc::from(x))
+    }
+
     pub fn evaluate_recipe(&self, opaque_ref: OpaqueSnoozyRef) {
         //println!("evaluate recipe {:?}", opaque_ref);
 
@@ -156,33 +223,41 @@ impl AssetReg {
                 dependencies: HashSet::new(),
             };
 
-            let recipe_info = self.get_recipe_info_for_ref(opaque_ref);
-            let mut recipe_info = recipe_info.write().unwrap();
-
             //println!("Running {}", recipe_info.recipe_meta.op_name);
 
-            let (res_or_err, build_duration) = {
-                let t0 = std::time::Instant::now();
-                let res = (recipe_runner)(&mut ctx);
-                (res, t0.elapsed())
+            let (res_or_err, should_cache) = {
+                if let Some(cached) = {
+                    let recipe_info = self.get_recipe_info_for_ref(opaque_ref);
+                    let recipe_info = recipe_info.write().unwrap();
+                    self.get_cached_build_result(opaque_ref, &recipe_info)
+                } {
+                    (Ok(cached), false)
+                } else {
+                    let t0 = std::time::Instant::now();
+                    let res = (recipe_runner)(&mut ctx);
+                    let build_duration = t0.elapsed();
+
+                    let should_cache = build_duration > std::time::Duration::from_millis(100);
+                    if should_cache {
+                        let recipe_info = self.get_recipe_info_for_ref(opaque_ref);
+                        let recipe_info = recipe_info.write().unwrap();
+                        println!(
+                            "{} took {:?}",
+                            recipe_info.recipe_meta.op_name, build_duration
+                        );
+                    }
+
+                    (res, should_cache)
+                }
             };
 
             match res_or_err {
                 Ok(res) => {
-                    let should_serialize = build_duration > std::time::Duration::from_millis(100);
+                    let recipe_info = self.get_recipe_info_for_ref(opaque_ref);
+                    let mut recipe_info = recipe_info.write().unwrap();
 
-                    if should_serialize
-                        && recipe_info
-                            .recipe_meta
-                            .serialize_proxy
-                            .does_support_serialization()
-                    {
-                        println!(
-                            "{} took {:?}. The result ({}) supports serialization, so we'll cache it.",
-                            recipe_info.recipe_meta.op_name,
-                            build_duration,
-                            recipe_info.recipe_meta.result_type_name
-                        );
+                    if should_cache {
+                        self.cache_build_result(opaque_ref, &*res, &recipe_info);
                     }
 
                     recipe_info.rebuild_pending = false;
@@ -215,6 +290,9 @@ impl AssetReg {
                     }
                 }
                 Err(err) => {
+                    let recipe_info = self.get_recipe_info_for_ref(opaque_ref);
+                    let mut recipe_info = recipe_info.write().unwrap();
+
                     // Build failed, but unless anything changes, this is what we're stuck with
                     recipe_info.rebuild_pending = false;
 

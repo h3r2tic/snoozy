@@ -1,53 +1,111 @@
+//use super::DerpySerialization;
 use std::any::Any;
 use std::marker::PhantomData;
 
-pub trait MaybeSerialize<'a>: Sized {
+pub trait MaybeSerialize: Sized {
     fn does_support_serialization() -> bool;
-    fn try_serialize<S: serde::Serializer>(&self, s: S) -> bool;
-    fn try_deserialize<S: serde::Deserializer<'a>>(s: S) -> Option<Self>;
+    fn try_serialize(&self, s: &mut Vec<u8>) -> bool;
+    fn try_deserialize<'a>(s: &'a mut [u8]) -> Option<Self>;
 }
 
-impl<'a, T> MaybeSerialize<'a> for T
+impl<T> MaybeSerialize for T
 where
     T: Sized,
 {
     default fn does_support_serialization() -> bool {
         false
     }
-    default fn try_serialize<S: serde::Serializer>(&self, _: S) -> bool {
+    default fn try_serialize(&self, _s: &mut Vec<u8>) -> bool {
         panic!();
     }
-    default fn try_deserialize<S: serde::Deserializer<'a>>(_: S) -> Option<Self> {
+    default fn try_deserialize<'a>(_s: &'a mut [u8]) -> Option<Self> {
         panic!();
     }
 }
 
-impl<'a, T> MaybeSerialize<'a> for T
+/*impl<T> MaybeSerialize for T
 where
-    T: serde::Serialize + serde::Deserialize<'a> + 'a,
+    T: serde::Serialize + for<'a> serde::Deserialize<'a>,
 {
     fn does_support_serialization() -> bool {
         true
     }
-    default fn try_serialize<S: serde::Serializer>(&self, s: S) -> bool {
-        <Self as serde::Serialize>::serialize(self, s).is_ok()
+    fn try_serialize(&self, s: &mut Vec<u8>) -> bool {
+        bincode::serialize_into(s, self).is_ok()
     }
-    default fn try_deserialize<S: serde::Deserializer<'a>>(s: S) -> Option<Self> {
-        <Self as serde::Deserialize>::deserialize(s).ok()
+    fn try_deserialize<'a>(s: &'a mut [u8]) -> Option<Self> {
+        bincode::deserialize(s).ok()
+    }
+}*/
+
+/*impl<T> MaybeSerialize for T
+where
+    T: for<'a> speedy::Readable<'a, speedy::Endianness>
+        + for<'b> speedy::Writable<speedy::Endianness>,
+{
+    fn does_support_serialization() -> bool {
+        true
+    }
+    fn try_serialize(&self, s: &mut Vec<u8>) -> bool {
+        //<Self as serde::Serialize>::serialize(self, &mut serde_cbor::Serializer::new(s)).is_ok()
+        let endian = speedy::Endianness::LittleEndian;
+        <Self as speedy::Writable<_>>::write_to_stream(self, endian, s).is_ok()
+        //bincode::serialize_into(s, self).is_ok()
+    }
+    fn try_deserialize<'a>(s: &'a mut [u8]) -> Option<Self> {
+        /*<Self as serde::Deserialize>::deserialize(&mut serde_cbor::Deserializer::from_reader(s))
+        .ok()*/
+//bincode::deserialize(s).ok()
+let endian = speedy::Endianness::LittleEndian;
+<Self as speedy::Readable<_>>::read_from_buffer(endian, s).ok()
+}
+}
+*/
+impl<T> MaybeSerialize for T
+where
+    T: abomonation::Abomonation + Clone,
+{
+    fn does_support_serialization() -> bool {
+        true
+    }
+    fn try_serialize(&self, s: &mut Vec<u8>) -> bool {
+        unsafe { abomonation::encode(self, s).is_ok() }
+    }
+    fn try_deserialize<'a>(s: &'a mut [u8]) -> Option<Self> {
+        if let Some((result, _)) = unsafe { abomonation::decode::<Self>(s) } {
+            Some((*result).clone())
+        } else {
+            None
+        }
     }
 }
 
-pub trait AnySerialize<R: std::io::Read, W: std::io::Write>: Send + Sync {
+/*impl<T> MaybeSerialize for T
+where
+    T: DerpySerialization,
+{
+    fn does_support_serialization() -> bool {
+        true
+    }
+    fn try_serialize(&self, s: &mut Vec<u8>) -> bool {
+        self.derpy_serialize(s)
+    }
+    fn try_deserialize<'a>(s: &'a mut [u8]) -> Option<Self> {
+        Self::derpy_deserialize(s)
+    }
+}*/
+
+pub trait AnySerialize: Send + Sync {
     fn does_support_serialization(&self) -> bool;
-    fn try_serialize(&self, obj: &dyn Any, w: &mut W) -> bool;
-    fn try_deserialize(&self, s: &mut R) -> Option<Box<dyn Any>>;
+    fn try_serialize(&self, obj: &(dyn Any + Send + Sync), w: &mut Vec<u8>) -> bool;
+    fn try_deserialize<'a>(&self, s: &'a mut [u8]) -> Option<Box<dyn Any + Send + Sync>>;
 }
 
 pub struct AnySerializeProxy<T: Any + Sized> {
     phantom: PhantomData<fn(T)>,
 }
 
-impl<'a, T: Any + MaybeSerialize<'a> + Sized> AnySerializeProxy<T> {
+impl<'a, T: Any + MaybeSerialize + Sized> AnySerializeProxy<T> {
     pub fn new() -> Self {
         Self {
             phantom: PhantomData,
@@ -55,41 +113,24 @@ impl<'a, T: Any + MaybeSerialize<'a> + Sized> AnySerializeProxy<T> {
     }
 }
 
-impl<'a, T, R: std::io::Read, W: std::io::Write> AnySerialize<R, W> for AnySerializeProxy<T>
+impl<T> AnySerialize for AnySerializeProxy<T>
 where
-    T: Any + MaybeSerialize<'a> + Sized,
+    T: Any + Send + Sync + MaybeSerialize + Sized,
 {
     fn does_support_serialization(&self) -> bool {
         <T as MaybeSerialize>::does_support_serialization()
     }
 
-    /*fn try_serialize(&self, obj: &dyn Any, s: S) -> bool {
+    fn try_serialize(&self, obj: &(dyn Any + Send + Sync), w: &mut Vec<u8>) -> bool {
         if let Some(ref obj) = obj.downcast_ref::<T>() {
-            <T as MaybeSerialize>::try_serialize(obj, s)
+            <T as MaybeSerialize>::try_serialize(obj, w)
         } else {
             false
         }
     }
 
-    fn try_deserialize(&self, s: D) -> Option<Box<dyn Any>> {
+    fn try_deserialize<'a>(&self, s: &'a mut [u8]) -> Option<Box<dyn Any + Send + Sync>> {
         if let Some(res) = <T as MaybeSerialize>::try_deserialize(s) {
-            Some(Box::new(res))
-        } else {
-            None
-        }
-    }*/
-
-    fn try_serialize(&self, obj: &dyn Any, w: &mut W) -> bool {
-        if let Some(ref obj) = obj.downcast_ref::<T>() {
-            <T as MaybeSerialize>::try_serialize(obj, &mut serde_cbor::Serializer::new(w))
-        } else {
-            false
-        }
-    }
-    fn try_deserialize(&self, s: &mut R) -> Option<Box<dyn Any>> {
-        if let Some(res) =
-            <T as MaybeSerialize>::try_deserialize(&mut serde_cbor::Deserializer::from_reader(s))
-        {
             Some(Box::new(res))
         } else {
             None

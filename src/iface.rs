@@ -70,7 +70,7 @@ pub fn def<AssetType: 'static + Send + Sync, OpType: Op<Res = AssetType> + Hash>
 
 pub fn def_named<
     'a,
-    AssetType: 'static + Send + Sync + MaybeSerialize<'a>,
+    AssetType: 'static + Send + Sync + MaybeSerialize,
     OpType: Op<Res = AssetType> + Hash,
 >(
     identity_hash: u64,
