@@ -67,7 +67,7 @@ lazy_static! {
 }
 
 pub struct AssetReg {
-    pub being_evaluated: Mutex<HashMap<OpaqueSnoozyRef, bool>>,
+    being_evaluated: Mutex<HashSet<OpaqueSnoozyRef>>,
     pub recipe_info: Mutex<HashMap<OpaqueSnoozyRef, Arc<RwLock<RecipeInfo>>>>,
     pub queued_asset_invalidations: Arc<Mutex<Vec<OpaqueSnoozyRef>>>,
 }
@@ -104,15 +104,12 @@ impl AssetReg {
     pub fn evaluate_recipe(&self, opaque_ref: OpaqueSnoozyRef) {
         //println!("evaluate recipe {:?}", opaque_ref);
 
-        if self.being_evaluated.lock().unwrap()[&opaque_ref] {
+        if !self.being_evaluated.lock().unwrap().insert(opaque_ref) {
             //println!("recipe already being evaluated");
             return;
         }
 
-        self.being_evaluated
-            .lock()
-            .unwrap()
-            .insert(opaque_ref, true);
+        self.being_evaluated.lock().unwrap().insert(opaque_ref);
 
         let (rebuild_pending, recipe_runner) = {
             let recipe_info = self.get_recipe_info_for_ref(opaque_ref);
@@ -142,7 +139,7 @@ impl AssetReg {
 
                     for dep in &build_record_diff.removed_deps {
                         // Don't keep circular dependencies
-                        if self.being_evaluated.lock().unwrap()[&dep] {
+                        if self.being_evaluated.lock().unwrap().contains(&dep) {
                             continue;
                         }
 
@@ -155,7 +152,7 @@ impl AssetReg {
 
                     for dep in &build_record_diff.added_deps {
                         // Don't keep circular dependencies
-                        if self.being_evaluated.lock().unwrap()[&dep] {
+                        if self.being_evaluated.lock().unwrap().contains(&dep) {
                             continue;
                         }
 
@@ -176,9 +173,6 @@ impl AssetReg {
             }
         }
 
-        self.being_evaluated
-            .lock()
-            .unwrap()
-            .insert(opaque_ref, false);
+        self.being_evaluated.lock().unwrap().remove(&opaque_ref);
     }
 }

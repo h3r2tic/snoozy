@@ -85,49 +85,40 @@ pub fn def_named<AssetType: 'static + Send + Sync, OpType: Op<Res = AssetType> +
         })
     };
 
-    {
-        let mut recipe_info = ASSET_REG.recipe_info.lock().unwrap();
+    let mut recipe_info = ASSET_REG.recipe_info.lock().unwrap();
 
-        match recipe_info.get(&res.into()) {
-            // Definition doesn't exist. Create it
-            None => {
-                recipe_info.insert(
-                    res.into(),
-                    Arc::new(RwLock::new(RecipeInfo {
-                        recipe_runner: make_recipe_runner(),
-                        rebuild_pending: true,
-                        build_record: None,
-                        recipe_hash,
-                    })),
-                );
-            }
-            // Definition exists. If the hash is the same, don't do anything
-            Some(entry) => {
-                let mut entry = entry.write().unwrap();
-                if entry.recipe_hash != recipe_hash {
-                    // Hash differs. Update the definition, but keep the last build record
-                    entry.recipe_runner = make_recipe_runner();
-                    entry.recipe_hash = recipe_hash;
+    match recipe_info.get(&res.into()) {
+        // Definition doesn't exist. Create it
+        None => {
+            recipe_info.insert(
+                res.into(),
+                Arc::new(RwLock::new(RecipeInfo {
+                    recipe_runner: make_recipe_runner(),
+                    rebuild_pending: true,
+                    build_record: None,
+                    recipe_hash,
+                })),
+            );
+        }
+        // Definition exists. If the hash is the same, don't do anything
+        Some(entry) => {
+            let mut entry = entry.write().unwrap();
+            if entry.recipe_hash != recipe_hash {
+                // Hash differs. Update the definition, but keep the last build record
+                entry.recipe_runner = make_recipe_runner();
+                entry.recipe_hash = recipe_hash;
 
-                    // Clear any pending rebuild of this asset, and instead schedule
-                    // a full rebuild including of all of its reverse dependencies.
-                    entry.rebuild_pending = false;
-                    ASSET_REG
-                        .queued_asset_invalidations
-                        .lock()
-                        .unwrap()
-                        .push(res.into());
-                }
+                // Clear any pending rebuild of this asset, and instead schedule
+                // a full rebuild including of all of its reverse dependencies.
+                entry.rebuild_pending = false;
+                ASSET_REG
+                    .queued_asset_invalidations
+                    .lock()
+                    .unwrap()
+                    .push(res.into());
             }
         }
     }
-
-    ASSET_REG
-        .being_evaluated
-        .lock()
-        .unwrap()
-        .entry(res.into())
-        .or_insert(false);
 
     res
 }
