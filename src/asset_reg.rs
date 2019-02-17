@@ -1,4 +1,5 @@
 use super::iface::Context;
+use super::maybe_serialize::{AnySerialize, AnySerializeProxy, MaybeSerialize};
 use super::refs::OpaqueSnoozyRef;
 use super::Result;
 use std::any::Any;
@@ -13,8 +14,36 @@ pub struct RecipeBuildRecord {
     pub reverse_dependencies: HashSet<OpaqueSnoozyRef>,
 }
 
-pub struct RecipeInfo {
+pub(crate) type VecByteReader = std::io::Cursor<Vec<u8>>;
+pub(crate) type VecByteWriter = Vec<u8>;
+
+pub(crate) struct RecipeMeta {
+    op_name: &'static str,
+    result_type_name: &'static str,
+    serialize_proxy: Box<dyn AnySerialize<VecByteReader, VecByteWriter>>,
+}
+
+impl RecipeMeta {
+    pub fn new<'a, T>(op_name: &'static str) -> Self
+    where
+        T: 'static + Send + Sync + MaybeSerialize<'a>,
+    {
+        let serialize_proxy: Box<AnySerializeProxy<T>> = Box::new(AnySerializeProxy::new());
+        let serialize_proxy =
+            serialize_proxy as Box<dyn AnySerialize<VecByteReader, VecByteWriter>>;
+
+        Self {
+            result_type_name: unsafe { std::intrinsics::type_name::<T>() },
+            op_name: op_name,
+            serialize_proxy,
+        }
+    }
+}
+
+pub(crate) struct RecipeInfo {
     pub recipe_runner: Arc<(Fn(&mut Context) -> Result<Arc<Any + Send + Sync>>) + Send + Sync>,
+    pub recipe_meta: RecipeMeta,
+    //pub any_serialize_proxy: Box<dyn AnySerialize<VecByteReader, VecByteWriter>>,
     pub recipe_hash: u64,
 
     pub rebuild_pending: bool,
@@ -57,7 +86,7 @@ impl RecipeInfo {
 }
 
 lazy_static! {
-    pub static ref ASSET_REG: AssetReg = {
+    pub(crate) static ref ASSET_REG: AssetReg = {
         AssetReg {
             recipe_info: Mutex::new(HashMap::new()),
             queued_asset_invalidations: Default::default(),
@@ -66,7 +95,7 @@ lazy_static! {
     };
 }
 
-pub struct AssetReg {
+pub(crate) struct AssetReg {
     being_evaluated: Mutex<HashSet<OpaqueSnoozyRef>>,
     pub recipe_info: Mutex<HashMap<OpaqueSnoozyRef, Arc<RwLock<RecipeInfo>>>>,
     pub queued_asset_invalidations: Arc<Mutex<Vec<OpaqueSnoozyRef>>>,
@@ -127,13 +156,35 @@ impl AssetReg {
                 dependencies: HashSet::new(),
             };
 
-            let res_or_err = (recipe_runner)(&mut ctx);
-
             let recipe_info = self.get_recipe_info_for_ref(opaque_ref);
             let mut recipe_info = recipe_info.write().unwrap();
 
+            //println!("Running {}", recipe_info.recipe_meta.op_name);
+
+            let (res_or_err, build_duration) = {
+                let t0 = std::time::Instant::now();
+                let res = (recipe_runner)(&mut ctx);
+                (res, t0.elapsed())
+            };
+
             match res_or_err {
                 Ok(res) => {
+                    let should_serialize = build_duration > std::time::Duration::from_millis(100);
+
+                    if should_serialize
+                        && recipe_info
+                            .recipe_meta
+                            .serialize_proxy
+                            .does_support_serialization()
+                    {
+                        println!(
+                            "{} took {:?}. The result ({}) supports serialization, so we'll cache it.",
+                            recipe_info.recipe_meta.op_name,
+                            build_duration,
+                            recipe_info.recipe_meta.result_type_name
+                        );
+                    }
+
                     recipe_info.rebuild_pending = false;
                     let build_record_diff = recipe_info.set_new_build_result(res, ctx.dependencies);
 

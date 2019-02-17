@@ -1,4 +1,5 @@
-use super::asset_reg::{RecipeBuildRecord, RecipeInfo, ASSET_REG};
+use super::asset_reg::{RecipeBuildRecord, RecipeInfo, RecipeMeta, ASSET_REG};
+use super::maybe_serialize::MaybeSerialize;
 use super::refs::{OpaqueSnoozyRef, SnoozyRef};
 use super::{DefaultSnoozyHash, Result};
 use std::any::Any;
@@ -50,6 +51,7 @@ pub trait Op: Send + 'static {
     type Res;
 
     fn run(&self, ctx: &mut Context) -> Result<Self::Res>;
+    fn name() -> &'static str;
 }
 
 pub trait SnoozyNamedOp {
@@ -66,7 +68,11 @@ pub fn def<AssetType: 'static + Send + Sync, OpType: Op<Res = AssetType> + Hash>
     def_named(s.finish(), op)
 }
 
-pub fn def_named<AssetType: 'static + Send + Sync, OpType: Op<Res = AssetType> + Hash>(
+pub fn def_named<
+    'a,
+    AssetType: 'static + Send + Sync + MaybeSerialize<'a>,
+    OpType: Op<Res = AssetType> + Hash,
+>(
     identity_hash: u64,
     op: OpType,
 ) -> SnoozyRef<AssetType> {
@@ -94,6 +100,7 @@ pub fn def_named<AssetType: 'static + Send + Sync, OpType: Op<Res = AssetType> +
                 res.into(),
                 Arc::new(RwLock::new(RecipeInfo {
                     recipe_runner: make_recipe_runner(),
+                    recipe_meta: RecipeMeta::new::<AssetType>(<OpType as Op>::name()),
                     rebuild_pending: true,
                     build_record: None,
                     recipe_hash,

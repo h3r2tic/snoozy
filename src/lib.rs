@@ -3,13 +3,13 @@
 
 mod asset_reg;
 mod iface;
+mod maybe_serialize;
 mod refs;
 mod whatever_hash;
 
 #[macro_use]
 mod macros;
 
-pub use asset_reg::AssetReg;
 pub use iface::*;
 pub use refs::{OpaqueSnoozyRef, SnoozyRef};
 pub use whatever_hash::whatever_hash;
