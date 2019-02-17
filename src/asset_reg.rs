@@ -41,7 +41,6 @@ impl RecipeMeta {
 pub(crate) struct RecipeInfo {
     pub recipe_runner: Arc<(Fn(&mut Context) -> Result<Arc<Any + Send + Sync>>) + Send + Sync>,
     pub recipe_meta: RecipeMeta,
-    //pub any_serialize_proxy: Box<dyn AnySerialize<VecByteReader, VecByteWriter>>,
     pub recipe_hash: u64,
 
     pub rebuild_pending: bool,
