@@ -5,11 +5,20 @@ use super::{DefaultSnoozyHash, Result};
 use std::any::Any;
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
+use std::pin::Pin;
 use std::sync::{Arc, Mutex, RwLock};
 
 pub struct Context {
     pub(crate) opaque_ref: OpaqueSnoozyRef, // Handle for the asset that this Context was created for
     pub(crate) dependencies: HashSet<OpaqueSnoozyRef>,
+}
+
+fn get_pinned_result<T>(p: Arc<dyn Any + Send + Sync>) -> Pin<Arc<T>>
+where
+    T: Any + Send + Sync + 'static,
+{
+    let p: Arc<T> = p.downcast::<T>().unwrap();
+    unsafe { Pin::new_unchecked(p) }
 }
 
 impl Context {
@@ -24,7 +33,7 @@ impl Context {
     pub fn get<Res: 'static + Send + Sync, SnoozyT: Into<SnoozyRef<Res>>>(
         &mut self,
         asset_ref: SnoozyT,
-    ) -> Result<Arc<Res>> {
+    ) -> Result<Pin<Arc<Res>>> {
         let asset_ref = asset_ref.into();
         let opaque_ref: OpaqueSnoozyRef = asset_ref.into();
 
@@ -38,7 +47,7 @@ impl Context {
             Some(RecipeBuildRecord {
                 ref last_valid_build_result,
                 ..
-            }) => Ok(last_valid_build_result.clone().downcast::<Res>().unwrap()),
+            }) => Ok(get_pinned_result(last_valid_build_result.clone())),
             _ => Err(format_err!(
                 "Requested asset {:?} failed to build",
                 opaque_ref
@@ -141,7 +150,7 @@ pub fn def_initial<AssetType: 'static + Send + Sync, OpType: Op<Res = AssetType>
 
 pub struct Snapshot;
 impl Snapshot {
-    pub fn get<Res: 'static + Send + Sync>(&self, asset_ref: SnoozyRef<Res>) -> Arc<Res> {
+    pub fn get<Res: 'static + Send + Sync>(&self, asset_ref: SnoozyRef<Res>) -> Pin<Arc<Res>> {
         let opaque_ref: OpaqueSnoozyRef = asset_ref.into();
 
         ASSET_REG.evaluate_recipe(opaque_ref);
@@ -153,7 +162,7 @@ impl Snapshot {
             Some(RecipeBuildRecord {
                 ref last_valid_build_result,
                 ..
-            }) => last_valid_build_result.clone().downcast::<Res>().unwrap(),
+            }) => get_pinned_result(last_valid_build_result.clone()),
             None => panic!("Requested asset {:?} failed to build", opaque_ref),
         }
     }

@@ -44,8 +44,13 @@ declare_optional_hash!(
     T,
     [Serialize],
     |item: &T, state| {
+        let t0 = std::time::Instant::now();
         let encoded: Vec<u8> = bincode::serialize(item).unwrap();
         encoded.hash(state);
+        let elapsed = t0.elapsed();
+        if elapsed > std::time::Duration::from_millis(100) {
+            println!("Serde-hash took {:?} :(", elapsed);
+        }
     }
 );
 
