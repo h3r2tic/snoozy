@@ -31,7 +31,7 @@ impl RecipeMeta {
         let serialize_proxy = serialize_proxy as Box<dyn AnySerialize>;
 
         Self {
-            result_type_name: unsafe { std::intrinsics::type_name::<T>() },
+            result_type_name: std::intrinsics::type_name::<T>(),
             op_name: op_name,
             serialize_proxy,
         }
@@ -39,7 +39,8 @@ impl RecipeMeta {
 }
 
 pub(crate) struct RecipeInfo {
-    pub recipe_runner: Arc<(Fn(&mut Context) -> Result<Arc<Any + Send + Sync>>) + Send + Sync>,
+    pub recipe_runner:
+        Arc<dyn (Fn(&mut Context) -> Result<Arc<dyn Any + Send + Sync>>) + Send + Sync>,
     pub recipe_meta: RecipeMeta,
     pub recipe_hash: u64,
 

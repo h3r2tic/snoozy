@@ -82,8 +82,9 @@ pub fn whatever_hash<T: 'static, H: Hasher>(t: &T, state: &mut H) {
         || SerdeSerializedHash::serde_serialized_hash(t, state);
 
     if !hashed {
-        panic!("No appropriate hash function found for {}", unsafe {
+        panic!(
+            "No appropriate hash function found for {}",
             std::intrinsics::type_name::<T>()
-        });
+        );
     }
 }

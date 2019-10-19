@@ -91,9 +91,9 @@ pub fn def_named<
 
     let res = SnoozyRef::new(identity_hash);
 
-    let make_recipe_runner = || -> Arc<(Fn(&mut Context) -> _) + Send + Sync> {
+    let make_recipe_runner = || -> Arc<dyn (Fn(&mut Context) -> _) + Send + Sync> {
         let op_mutex = Mutex::new(op);
-        Arc::new(move |mut ctx| -> Result<Arc<Any + Send + Sync>> {
+        Arc::new(move |mut ctx| -> Result<Arc<dyn Any + Send + Sync>> {
             //println!("Running recipe {:?} ({})", &*op_mutex.lock().unwrap(), identity_hash);
             let build_result = op_mutex.lock().unwrap().run(&mut ctx)?;
             Ok(Arc::new(build_result))

@@ -14,7 +14,7 @@ pub use iface::*;
 pub use refs::{OpaqueSnoozyRef, SnoozyRef};
 pub use whatever_hash::whatever_hash;
 
-#[macro_use]
+//#[macro_use]
 extern crate serde_derive;
 #[macro_use]
 extern crate failure;
