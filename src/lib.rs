@@ -1,5 +1,6 @@
 #![feature(specialization)]
 #![feature(core_intrinsics)]
+#![feature(weak_counts)]
 
 mod asset_reg;
 mod iface;
@@ -14,7 +15,8 @@ pub use iface::*;
 pub use refs::{OpaqueSnoozyRef, SnoozyRef};
 pub use whatever_hash::whatever_hash;
 
-//#[macro_use]
+#[allow(unused_imports)]
+#[macro_use]
 extern crate serde_derive;
 #[macro_use]
 extern crate failure;

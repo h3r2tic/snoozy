@@ -1,12 +1,12 @@
 use super::iface::Context;
 use super::maybe_serialize::{AnySerialize, AnySerializeProxy, MaybeSerialize};
-use super::refs::OpaqueSnoozyRef;
+use super::refs::*;
 use super::Result;
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{Read, Write};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock, Weak};
 
 pub struct RecipeBuildRecord {
     pub last_valid_build_result: Arc<dyn Any + Send + Sync>,
@@ -86,36 +86,81 @@ impl RecipeInfo {
 lazy_static! {
     pub(crate) static ref ASSET_REG: AssetReg = {
         AssetReg {
-            recipe_info: Mutex::new(HashMap::new()),
+            ref_info: Mutex::new(RefInfo::default()),
             queued_asset_invalidations: Default::default(),
             being_evaluated: Default::default(),
         }
     };
 }
 
+#[derive(Default)]
+pub(crate) struct RefInfo {
+    pub refs: HashMap<OpaqueSnoozyRefInner, Weak<OpaqueSnoozyRefInner>>,
+
+    // If at least one reference exists, it will be here
+    pub recipe_info: HashMap<OpaqueSnoozyRef, Arc<RwLock<RecipeInfo>>>,
+}
+
 pub(crate) struct AssetReg {
     being_evaluated: Mutex<HashSet<OpaqueSnoozyRef>>,
-    pub recipe_info: Mutex<HashMap<OpaqueSnoozyRef, Arc<RwLock<RecipeInfo>>>>,
+    pub ref_info: Mutex<RefInfo>,
     pub queued_asset_invalidations: Arc<Mutex<Vec<OpaqueSnoozyRef>>>,
 }
 
 impl AssetReg {
     pub fn propagate_invalidations(&self) {
+        //dbg!(self.ref_info.lock().unwrap().recipe_info.len());
+
+        self.remove_unreferenced();
+
         let mut queued = self.queued_asset_invalidations.lock().unwrap();
 
         for opaque_ref in queued.iter() {
-            self.invalidate_asset_tree(*opaque_ref);
+            self.invalidate_asset_tree(opaque_ref);
         }
 
         queued.clear();
     }
 
-    pub fn get_recipe_info_for_ref(&self, opaque_ref: OpaqueSnoozyRef) -> Arc<RwLock<RecipeInfo>> {
-        let mut recipe_info_map = self.recipe_info.lock().unwrap();
-        recipe_info_map.get_mut(&opaque_ref).unwrap().clone()
+    fn remove_unreferenced(&self) {
+        let mut ref_info = self.ref_info.lock().unwrap();
+        let mut to_remove = vec![];
+
+        ref_info.refs.retain(|_r, wr| {
+            if 1 == wr.strong_count() {
+                to_remove.push(
+                    wr.upgrade()
+                        .map(OpaqueSnoozyRef::new)
+                        .expect("ref dropped while searching recipe info"),
+                );
+                false
+            } else {
+                true
+            }
+        });
+
+        //if !to_remove.is_empty() {
+        //  dbg!(to_remove.len());
+        //}
+
+        for r in to_remove.drain(..) {
+            ref_info
+                .recipe_info
+                .remove(&r)
+                .expect("ref not found in recipe info");
+        }
     }
 
-    fn invalidate_asset_tree(&self, opaque_ref: OpaqueSnoozyRef) {
+    pub fn get_recipe_info_for_ref(&self, opaque_ref: &OpaqueSnoozyRef) -> Arc<RwLock<RecipeInfo>> {
+        let mut recipe_info_map = self.ref_info.lock().unwrap();
+        recipe_info_map
+            .recipe_info
+            .get_mut(&opaque_ref)
+            .unwrap()
+            .clone()
+    }
+
+    fn invalidate_asset_tree(&self, opaque_ref: &OpaqueSnoozyRef) {
         let recipe_info = self.get_recipe_info_for_ref(opaque_ref);
 
         let mut recipe_info = recipe_info.write().unwrap();
@@ -123,14 +168,14 @@ impl AssetReg {
 
         if let Some(ref build_record) = recipe_info.build_record {
             for dep in build_record.reverse_dependencies.iter() {
-                self.invalidate_asset_tree(*dep);
+                self.invalidate_asset_tree(dep);
             }
         }
     }
 
     fn cache_build_result(
         &self,
-        opaque_ref: OpaqueSnoozyRef,
+        opaque_ref: &OpaqueSnoozyRef,
         asset: &(dyn Any + Send + Sync),
         recipe_info: &RecipeInfo,
     ) {
@@ -167,7 +212,7 @@ impl AssetReg {
 
     fn get_cached_build_result(
         &self,
-        opaque_ref: OpaqueSnoozyRef,
+        opaque_ref: &OpaqueSnoozyRef,
         recipe_info: &RecipeInfo,
     ) -> Option<Arc<dyn Any + Send + Sync>> {
         let serialize_proxy = &*recipe_info.recipe_meta.serialize_proxy as &dyn AnySerialize;
@@ -197,15 +242,23 @@ impl AssetReg {
         result.map(|x| Arc::from(x))
     }
 
-    pub fn evaluate_recipe(&self, opaque_ref: OpaqueSnoozyRef) {
+    pub fn evaluate_recipe(&self, opaque_ref: &OpaqueSnoozyRef) {
         //println!("evaluate recipe {:?}", opaque_ref);
 
-        if !self.being_evaluated.lock().unwrap().insert(opaque_ref) {
+        if !self
+            .being_evaluated
+            .lock()
+            .unwrap()
+            .insert(opaque_ref.clone())
+        {
             //println!("recipe already being evaluated");
             return;
         }
 
-        self.being_evaluated.lock().unwrap().insert(opaque_ref);
+        self.being_evaluated
+            .lock()
+            .unwrap()
+            .insert(opaque_ref.clone());
 
         let (rebuild_pending, recipe_runner) = {
             let recipe_info = self.get_recipe_info_for_ref(opaque_ref);
@@ -219,7 +272,7 @@ impl AssetReg {
 
         if rebuild_pending {
             let mut ctx = Context {
-                opaque_ref,
+                opaque_ref: opaque_ref.clone(),
                 dependencies: HashSet::new(),
             };
 
@@ -269,7 +322,7 @@ impl AssetReg {
                             continue;
                         }
 
-                        let dep = self.get_recipe_info_for_ref(*dep);
+                        let dep = self.get_recipe_info_for_ref(dep);
                         let mut dep = dep.write().unwrap();
                         if let Some(ref mut build_record) = dep.build_record {
                             build_record.reverse_dependencies.remove(&opaque_ref);
@@ -282,10 +335,10 @@ impl AssetReg {
                             continue;
                         }
 
-                        let dep = self.get_recipe_info_for_ref(*dep);
+                        let dep = self.get_recipe_info_for_ref(dep);
                         let mut dep = dep.write().unwrap();
                         if let Some(ref mut build_record) = dep.build_record {
-                            build_record.reverse_dependencies.insert(opaque_ref);
+                            build_record.reverse_dependencies.insert(opaque_ref.clone());
                         }
                     }
                 }

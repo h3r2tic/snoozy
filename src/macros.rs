@@ -17,6 +17,6 @@ macro_rules! init_dynamic {
 #[macro_export]
 macro_rules! redef_dynamic {
     ($asset_ref:expr, $name:ident ($($arg:expr),*)) => {
-		$name::redef_named($asset_ref.identity_hash, $name::new($($arg),*))
+		$name::redef_named($asset_ref.identity_hash(), $name::new($($arg),*))
 	}
 }
