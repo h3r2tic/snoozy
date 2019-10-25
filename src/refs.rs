@@ -1,17 +1,18 @@
 use serde::{ser::SerializeTuple, Serialize, Serializer};
 use std::any::TypeId;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::mem::transmute;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock, Weak};
 
 #[derive(Hash, Clone, Eq, PartialEq, Debug)]
-pub struct OpaqueSnoozyRefInner {
+pub struct OpaqueSnoozyAddr {
     pub(crate) identity_hash: u64,
     pub(crate) type_id: TypeId,
 }
 
-impl OpaqueSnoozyRefInner {
+impl OpaqueSnoozyAddr {
     pub(crate) fn new<Res: 'static>(identity_hash: u64) -> Self {
         Self {
             identity_hash,
@@ -20,7 +21,7 @@ impl OpaqueSnoozyRefInner {
     }
 }
 
-impl Serialize for OpaqueSnoozyRefInner {
+impl Serialize for OpaqueSnoozyAddr {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -32,33 +33,46 @@ impl Serialize for OpaqueSnoozyRefInner {
     }
 }
 
-#[derive(Hash, Clone, Eq, PartialEq, Debug)]
-pub struct OpaqueSnoozyRef {
-    pub(crate) inner: Arc<OpaqueSnoozyRefInner>,
+pub struct OpaqueSnoozyRefInner {
+    pub(crate) addr: OpaqueSnoozyAddr,
+    pub(crate) recipe_info: RwLock<crate::asset_reg::RecipeInfo>,
 }
 
-impl Serialize for OpaqueSnoozyRef {
+impl PartialEq for OpaqueSnoozyRefInner {
+    fn eq(&self, other: &Self) -> bool {
+        self.addr == other.addr
+    }
+}
+
+impl Eq for OpaqueSnoozyRefInner {}
+
+impl Hash for OpaqueSnoozyRefInner {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.addr.hash(state);
+    }
+}
+
+impl fmt::Debug for OpaqueSnoozyRefInner {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "OpaqueSnoozyRef {{identity_hash: {}}}",
+            self.addr.identity_hash
+        )
+    }
+}
+
+impl Serialize for OpaqueSnoozyRefInner {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        self.inner.serialize(serializer)
+        self.addr.serialize(serializer)
     }
 }
 
-impl OpaqueSnoozyRef {
-    pub(crate) fn new(inner: Arc<OpaqueSnoozyRefInner>) -> Self {
-        Self { inner }
-    }
-}
-
-impl std::ops::Deref for OpaqueSnoozyRef {
-    type Target = OpaqueSnoozyRefInner;
-
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
-}
+pub type OpaqueSnoozyRef = Arc<OpaqueSnoozyRefInner>;
+pub type WeakOpaqueSnoozyRef = Weak<OpaqueSnoozyRefInner>;
 
 #[derive(Hash, Serialize)]
 pub struct SnoozyRef<Res> {
@@ -75,7 +89,7 @@ impl<Res> SnoozyRef<Res> {
     }
 
     pub fn identity_hash(&self) -> u64 {
-        self.opaque.inner.identity_hash
+        self.opaque.addr.identity_hash
     }
 }
 
@@ -117,10 +131,6 @@ impl<Res> fmt::Debug for SnoozyRef<Res> {
 #[cfg(not(core_intrinsics))]
 impl<Res> fmt::Debug for SnoozyRef<Res> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "SnoozyRef {{identity_hash: {}}}",
-            self.opaque.identity_hash
-        )
+        write!(f, "SnoozyRef {{identity_hash: {}}}", self.identity_hash())
     }
 }

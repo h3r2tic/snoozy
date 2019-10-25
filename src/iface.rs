@@ -1,6 +1,6 @@
 use super::asset_reg::{RecipeBuildRecord, RecipeInfo, RecipeMeta, ASSET_REG};
 use super::maybe_serialize::MaybeSerialize;
-use super::refs::{OpaqueSnoozyRef, OpaqueSnoozyRefInner, SnoozyRef};
+use super::refs::{OpaqueSnoozyAddr, OpaqueSnoozyRef, OpaqueSnoozyRefInner, SnoozyRef};
 use super::{DefaultSnoozyHash, Result};
 use std::any::Any;
 use std::collections::HashSet;
@@ -40,7 +40,7 @@ impl Context {
         self.dependencies.insert(opaque_ref.clone());
         ASSET_REG.evaluate_recipe(&opaque_ref);
 
-        let recipe_info = ASSET_REG.get_recipe_info_for_ref(&opaque_ref);
+        let recipe_info = &opaque_ref.recipe_info;
         let recipe_info = recipe_info.read().unwrap();
 
         match recipe_info.build_record {
@@ -98,49 +98,37 @@ pub fn def_named<
         })
     };
 
-    let mut ref_info = ASSET_REG.ref_info.lock().unwrap();
+    let mut refs = ASSET_REG.refs.write().unwrap();
 
-    //let opaque_ref_inner: OpaqueSnoozyRefInner = res.clone().into();
-    let opaque_ref_inner = OpaqueSnoozyRefInner::new::<AssetType>(identity_hash);
-    let opaque_ref: Option<OpaqueSnoozyRef> = ref_info
-        .refs
-        .get(&opaque_ref_inner)
-        .and_then(|inner_ref| inner_ref.upgrade())
-        .map(OpaqueSnoozyRef::new);
+    //let opaque_addr: OpaqueSnoozyRefInner = res.clone().into();
+    let opaque_addr = OpaqueSnoozyAddr::new::<AssetType>(identity_hash);
     //let res = SnoozyRef::new(identity_hash);
 
-    match opaque_ref.as_ref().map(|osr| {
-        ref_info
-            .recipe_info
-            .get(&osr)
-            .expect("reference exists but it's missing from recipe_info")
-    }) {
+    match refs.get(&opaque_addr) {
         // Definition doesn't exist. Create it
         None => {
-            let opaque_ref = OpaqueSnoozyRef::new(Arc::new(opaque_ref_inner.clone()));
-            ref_info
-                .refs
-                .insert(opaque_ref_inner, Arc::downgrade(&opaque_ref.inner));
+            let recipe_info = RwLock::new(RecipeInfo {
+                recipe_runner: make_recipe_runner(),
+                recipe_meta: RecipeMeta::new::<AssetType>(<OpType as Op>::name()),
+                rebuild_pending: true,
+                build_record: None,
+                recipe_hash,
+            });
 
-            ref_info.recipe_info.insert(
-                opaque_ref.clone(),
-                Arc::new(RwLock::new(RecipeInfo {
-                    recipe_runner: make_recipe_runner(),
-                    recipe_meta: RecipeMeta::new::<AssetType>(<OpType as Op>::name()),
-                    rebuild_pending: true,
-                    build_record: None,
-                    recipe_hash,
-                })),
-            );
+            let opaque_ref = Arc::new(OpaqueSnoozyRefInner {
+                addr: opaque_addr.clone(),
+                recipe_info,
+            });
+
+            refs.insert(opaque_addr, opaque_ref.clone());
 
             SnoozyRef::new(opaque_ref)
         }
         // Definition exists. If the hash is the same, don't do anything
-        Some(entry) => {
+        Some(opaque_ref) => {
             // Always Some in this branch
-            let opaque_ref = opaque_ref.unwrap();
+            let mut entry = opaque_ref.recipe_info.write().unwrap();
 
-            let mut entry = entry.write().unwrap();
             if entry.recipe_hash != recipe_hash {
                 // Hash differs. Update the definition, but keep the last build record
                 entry.recipe_runner = make_recipe_runner();
@@ -156,7 +144,7 @@ pub fn def_named<
                     .push(opaque_ref.clone());
             }
 
-            SnoozyRef::new(opaque_ref)
+            SnoozyRef::new(opaque_ref.clone())
         }
     }
 }
@@ -177,7 +165,7 @@ impl Snapshot {
 
         ASSET_REG.evaluate_recipe(&opaque_ref);
 
-        let recipe_info = ASSET_REG.get_recipe_info_for_ref(&opaque_ref);
+        let recipe_info = &opaque_ref.recipe_info;
         let recipe_info = recipe_info.read().unwrap();
 
         match recipe_info.build_record {

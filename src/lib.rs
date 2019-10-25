@@ -1,6 +1,6 @@
 #![feature(specialization)]
 #![feature(core_intrinsics)]
-#![feature(weak_counts)]
+#![feature(weak_into_raw)]
 
 mod asset_reg;
 mod iface;
