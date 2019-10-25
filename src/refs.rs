@@ -106,7 +106,6 @@ impl<Res> From<&SnoozyRef<Res>> for SnoozyRef<Res> {
     }
 }
 
-//impl<Res> Copy for SnoozyRef<Res> {}
 impl<Res> Clone for SnoozyRef<Res> {
     fn clone(&self) -> Self {
         SnoozyRef {

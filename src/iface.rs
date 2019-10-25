@@ -6,7 +6,7 @@ use std::any::Any;
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::pin::Pin;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock, Weak};
 
 pub struct Context {
     pub(crate) opaque_ref: OpaqueSnoozyRef, // Handle for the asset that this Context was created for
@@ -104,7 +104,7 @@ pub fn def_named<
     let opaque_addr = OpaqueSnoozyAddr::new::<AssetType>(identity_hash);
     //let res = SnoozyRef::new(identity_hash);
 
-    match refs.get(&opaque_addr) {
+    match refs.get(&opaque_addr).and_then(Weak::upgrade) {
         // Definition doesn't exist. Create it
         None => {
             let recipe_info = RwLock::new(RecipeInfo {
@@ -120,7 +120,7 @@ pub fn def_named<
                 recipe_info,
             });
 
-            refs.insert(opaque_addr, opaque_ref.clone());
+            refs.insert(opaque_addr, Arc::downgrade(&opaque_ref));
 
             SnoozyRef::new(opaque_ref)
         }

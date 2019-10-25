@@ -107,28 +107,18 @@ lazy_static! {
 
 pub(crate) struct AssetReg {
     being_evaluated: Mutex<HashSet<OpaqueSnoozyRef>>,
-    pub refs: RwLock<HashMap<OpaqueSnoozyAddr, OpaqueSnoozyRef>>,
+    pub refs: RwLock<HashMap<OpaqueSnoozyAddr, WeakOpaqueSnoozyRef>>,
     pub queued_asset_invalidations: Arc<Mutex<Vec<OpaqueSnoozyRef>>>,
 }
 
 impl AssetReg {
     pub fn propagate_invalidations(&self) {
-        self.remove_unreferenced();
-
         let mut queued = self.queued_asset_invalidations.lock().unwrap();
         for opaque_ref in queued.iter() {
             self.invalidate_asset_tree(opaque_ref);
         }
 
         queued.clear();
-    }
-
-    fn remove_unreferenced(&self) {
-        // Remove anything which isn't externally referenced
-        self.refs
-            .write()
-            .unwrap()
-            .retain(|_r, wr| Arc::strong_count(wr) > 1);
     }
 
     fn invalidate_asset_tree(&self, opaque_ref: &OpaqueSnoozyRef) {
