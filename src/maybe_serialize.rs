@@ -4,7 +4,7 @@ use std::marker::PhantomData;
 pub trait MaybeSerialize: Sized {
     fn does_support_serialization() -> bool;
     fn try_serialize(&self, s: &mut Vec<u8>) -> bool;
-    fn try_deserialize<'a>(s: &'a mut [u8]) -> Option<Self>;
+    fn try_deserialize(s: &mut [u8]) -> Option<Self>;
 }
 
 impl<T> MaybeSerialize for T
@@ -17,7 +17,7 @@ where
     default fn try_serialize(&self, _s: &mut Vec<u8>) -> bool {
         panic!();
     }
-    default fn try_deserialize<'a>(_s: &'a mut [u8]) -> Option<Self> {
+    default fn try_deserialize(_s: &mut [u8]) -> Option<Self> {
         panic!();
     }
 }
@@ -70,7 +70,7 @@ where
     fn try_serialize(&self, s: &mut Vec<u8>) -> bool {
         unsafe { abomonation::encode(self, s).is_ok() }
     }
-    fn try_deserialize<'a>(s: &'a mut [u8]) -> Option<Self> {
+    fn try_deserialize(s: &mut [u8]) -> Option<Self> {
         if let Some((result, _)) = unsafe { abomonation::decode::<Self>(s) } {
             Some((*result).clone())
         } else {

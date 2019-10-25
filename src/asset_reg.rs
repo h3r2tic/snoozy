@@ -32,7 +32,7 @@ pub(crate) struct RecipeMeta {
 }
 
 impl RecipeMeta {
-    pub fn new<'a, T>(op_name: &'static str) -> Self
+    pub fn new<T>(op_name: &'static str) -> Self
     where
         T: 'static + Send + Sync + MaybeSerialize,
     {
@@ -41,7 +41,7 @@ impl RecipeMeta {
 
         Self {
             result_type_name: std::intrinsics::type_name::<T>(),
-            op_name: op_name,
+            op_name,
             serialize_proxy,
         }
     }
@@ -170,7 +170,7 @@ impl AssetReg {
 
         let path = format!(".cache/{:x}.bin", opaque_ref.identity_hash);
         let mut f = File::create(&path).expect("Unable to create file");
-        if !f.write_all(data.as_slice()).is_ok() {
+        if f.write_all(data.as_slice()).is_err() {
             let _ = std::fs::remove_file(&path);
         }
     }
@@ -206,7 +206,7 @@ impl AssetReg {
             None
         };
 
-        result.map(|x| Arc::from(x))
+        result.map(Arc::from)
     }
 
     pub fn evaluate_recipe(&self, opaque_ref: &OpaqueSnoozyRef) {
@@ -305,11 +305,19 @@ impl AssetReg {
 
                         let dep = &dep.recipe_info;
                         let mut dep = dep.write().unwrap();
+                        let to_add: *const OpaqueSnoozyRefInner = &**opaque_ref;
+
                         if let Some(ref mut build_record) = dep.build_record {
-                            // TODO: dedup?
-                            build_record
+                            let exists = build_record
                                 .reverse_dependencies
-                                .push(Arc::downgrade(opaque_ref));
+                                .iter()
+                                .any(|r| std::ptr::eq(r.as_raw(), to_add));
+
+                            if !exists {
+                                build_record
+                                    .reverse_dependencies
+                                    .push(Arc::downgrade(opaque_ref));
+                            }
                         }
                     }
                 }
