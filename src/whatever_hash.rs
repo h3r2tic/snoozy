@@ -39,6 +39,19 @@ declare_optional_hash!(
 );
 
 declare_optional_hash!(
+    BoxedPodVecHash,
+    boxed_pod_vec_hash,
+    Box<Vec<T>>,
+    [Copy, Sized],
+    |item: &Box<Vec<T>>, state| unsafe {
+        let p = item.as_ptr();
+        let item_sizeof = std::mem::size_of::<T>();
+        let len = item.len() * item_sizeof;
+        std::slice::from_raw_parts(p as *const u8, len).hash(state);
+    }
+);
+
+declare_optional_hash!(
     SerdeSerializedHash,
     serde_serialized_hash,
     T,
@@ -78,6 +91,7 @@ declare_optional_hash!(
 pub fn whatever_hash<T: 'static, H: Hasher>(t: &T, state: &mut H) {
     let hashed = BuiltInRustHash::built_in_rust_hash(t, state)
         || PodVecHash::pod_vec_hash(t, state)
+        || BoxedPodVecHash::boxed_pod_vec_hash(t, state)
         || PlainOldDataHash::plain_old_data_hash(t, state)
         || SerdeSerializedHash::serde_serialized_hash(t, state);
 
