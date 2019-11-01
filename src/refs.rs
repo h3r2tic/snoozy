@@ -147,9 +147,7 @@ impl<Res> SnoozyRef<Res> {
             entry.recipe_meta = clone_desc.recipe_meta;
             entry.recipe_hash = clone_desc.recipe_hash;
 
-            // Clear any pending rebuild of this asset, and instead schedule
-            // a full rebuild including of all of its reverse dependencies.
-            entry.rebuild_pending = false;
+            // Schedule a full rebuild including of all of its reverse dependencies.
             crate::asset_reg::ASSET_REG
                 .queued_asset_invalidations
                 .lock()
