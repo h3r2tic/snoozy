@@ -6,14 +6,30 @@ use std::marker::PhantomData;
 use std::mem::transmute;
 use std::sync::{Arc, RwLock, Weak};
 
+#[derive(Hash, Clone, Copy, Eq, PartialEq, Debug, Serialize)]
+pub enum SnoozyIdentityHash {
+    Recipe(u64),
+    Unique(u64),
+}
+
+impl SnoozyIdentityHash {
+    pub fn is_unique(&self) -> bool {
+        if let SnoozyIdentityHash::Unique(_) = self {
+            true
+        } else {
+            false
+        }
+    }
+}
+
 #[derive(Hash, Clone, Eq, PartialEq, Debug)]
 pub struct OpaqueSnoozyAddr {
-    pub(crate) identity_hash: u64,
+    pub(crate) identity_hash: SnoozyIdentityHash,
     pub(crate) type_id: TypeId,
 }
 
 impl OpaqueSnoozyAddr {
-    pub(crate) fn new<Res: 'static>(identity_hash: u64) -> Self {
+    pub(crate) fn new<Res: 'static>(identity_hash: SnoozyIdentityHash) -> Self {
         Self {
             identity_hash,
             type_id: TypeId::of::<Res>(),
@@ -56,7 +72,7 @@ impl fmt::Debug for OpaqueSnoozyRefInner {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "OpaqueSnoozyRef {{identity_hash: {}}}",
+            "OpaqueSnoozyRef {{identity_hash: {:?}}}",
             self.addr.identity_hash
         )
     }
@@ -80,6 +96,10 @@ pub struct SnoozyRef<Res> {
     phantom: PhantomData<Res>,
 }
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_UNIQUE_REF: AtomicU64 = AtomicU64::new(0);
+
 impl<Res> SnoozyRef<Res> {
     pub fn new(opaque: OpaqueSnoozyRef) -> Self {
         Self {
@@ -88,8 +108,54 @@ impl<Res> SnoozyRef<Res> {
         }
     }
 
-    pub fn identity_hash(&self) -> u64 {
+    pub fn identity_hash(&self) -> SnoozyIdentityHash {
         self.opaque.addr.identity_hash
+    }
+
+    pub fn into_dynamic(self) -> Self {
+        let identity_hash =
+            SnoozyIdentityHash::Unique(NEXT_UNIQUE_REF.fetch_add(1, Ordering::Relaxed));
+
+        Self {
+            opaque: Arc::new(OpaqueSnoozyRefInner {
+                addr: OpaqueSnoozyAddr {
+                    identity_hash,
+                    type_id: self.opaque.addr.type_id,
+                },
+                recipe_info: RwLock::new(self.opaque.recipe_info.read().unwrap().clone_desc()),
+            }),
+            phantom: PhantomData,
+        }
+    }
+
+    pub fn rebind(&mut self, other: Self) {
+        assert!(
+            self.identity_hash().is_unique(),
+            "rebind() can only be used on dynamic slots. Use into_dynamic() first."
+        );
+
+        // Evaluate the recipe in case it's used recursively in its own definition
+        crate::asset_reg::ASSET_REG.evaluate_recipe(&self.opaque);
+
+        let mut entry = self.opaque.recipe_info.write().unwrap();
+
+        let other_entry = other.opaque.recipe_info.read().unwrap();
+
+        if entry.recipe_hash != other_entry.recipe_hash {
+            let clone_desc = other_entry.clone_desc();
+            entry.recipe_runner = clone_desc.recipe_runner;
+            entry.recipe_meta = clone_desc.recipe_meta;
+            entry.recipe_hash = clone_desc.recipe_hash;
+
+            // Clear any pending rebuild of this asset, and instead schedule
+            // a full rebuild including of all of its reverse dependencies.
+            entry.rebuild_pending = false;
+            crate::asset_reg::ASSET_REG
+                .queued_asset_invalidations
+                .lock()
+                .unwrap()
+                .push(self.opaque.clone());
+        }
     }
 }
 
@@ -130,6 +196,6 @@ impl<Res> fmt::Debug for SnoozyRef<Res> {
 #[cfg(not(core_intrinsics))]
 impl<Res> fmt::Debug for SnoozyRef<Res> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "SnoozyRef {{identity_hash: {}}}", self.identity_hash())
+        write!(f, "SnoozyRef {{identity_hash: {:?}}}", self.identity_hash())
     }
 }

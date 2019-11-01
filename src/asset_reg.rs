@@ -47,6 +47,16 @@ impl RecipeMeta {
     }
 }
 
+impl Clone for RecipeMeta {
+    fn clone(&self) -> Self {
+        Self {
+            op_name: self.op_name,
+            result_type_name: self.result_type_name,
+            serialize_proxy: self.serialize_proxy.clone_boxed(),
+        }
+    }
+}
+
 pub(crate) struct RecipeInfo {
     pub recipe_runner:
         Arc<dyn (Fn(&mut Context) -> Result<Arc<dyn Any + Send + Sync>>) + Send + Sync>,
@@ -91,6 +101,16 @@ impl RecipeInfo {
         BuildRecordDiff {
             added_deps,
             removed_deps,
+        }
+    }
+
+    pub(crate) fn clone_desc(&self) -> Self {
+        Self {
+            recipe_runner: self.recipe_runner.clone(),
+            recipe_meta: self.recipe_meta.clone(),
+            rebuild_pending: true,
+            build_record: None,
+            recipe_hash: self.recipe_hash,
         }
     }
 }
@@ -144,34 +164,36 @@ impl AssetReg {
         asset: &(dyn Any + Send + Sync),
         recipe_info: &RecipeInfo,
     ) {
-        let serialize_proxy = &*recipe_info.recipe_meta.serialize_proxy as &dyn AnySerialize;
+        if let SnoozyIdentityHash::Recipe(identity_hash) = opaque_ref.identity_hash {
+            let serialize_proxy = &*recipe_info.recipe_meta.serialize_proxy as &dyn AnySerialize;
 
-        if !serialize_proxy.does_support_serialization() {
-            return;
-        }
+            if !serialize_proxy.does_support_serialization() {
+                return;
+            }
 
-        println!(
-            "The result ({}) supports serialization, and we'll cache it.",
-            recipe_info.recipe_meta.result_type_name
-        );
+            println!(
+                "The result ({}) supports serialization, and we'll cache it.",
+                recipe_info.recipe_meta.result_type_name
+            );
 
-        let _ = std::fs::create_dir(".cache");
+            let _ = std::fs::create_dir(".cache");
 
-        let t0 = std::time::Instant::now();
+            let t0 = std::time::Instant::now();
 
-        let mut data: Vec<u8> = Vec::new();
-        serialize_proxy.try_serialize(asset, &mut data);
+            let mut data: Vec<u8> = Vec::new();
+            serialize_proxy.try_serialize(asset, &mut data);
 
-        println!(
-            "Serialized into {} in {:?}",
-            pretty_bytes::converter::convert(data.len() as f64),
-            t0.elapsed()
-        );
+            println!(
+                "Serialized into {} in {:?}",
+                pretty_bytes::converter::convert(data.len() as f64),
+                t0.elapsed()
+            );
 
-        let path = format!(".cache/{:x}.bin", opaque_ref.identity_hash);
-        let mut f = File::create(&path).expect("Unable to create file");
-        if f.write_all(data.as_slice()).is_err() {
-            let _ = std::fs::remove_file(&path);
+            let path = format!(".cache/{:x}.bin", identity_hash);
+            let mut f = File::create(&path).expect("Unable to create file");
+            if f.write_all(data.as_slice()).is_err() {
+                let _ = std::fs::remove_file(&path);
+            }
         }
     }
 
@@ -179,39 +201,41 @@ impl AssetReg {
         &self,
         opaque_ref: &OpaqueSnoozyRef,
     ) -> Option<Arc<dyn Any + Send + Sync>> {
-        let recipe_info = &opaque_ref.recipe_info;
-        let recipe_info = recipe_info.read().unwrap();
+        if let SnoozyIdentityHash::Recipe(identity_hash) = opaque_ref.addr.identity_hash {
+            let recipe_info = &opaque_ref.recipe_info;
+            let recipe_info = recipe_info.read().unwrap();
 
-        let serialize_proxy = &*recipe_info.recipe_meta.serialize_proxy as &dyn AnySerialize;
+            let serialize_proxy = &*recipe_info.recipe_meta.serialize_proxy as &dyn AnySerialize;
 
-        if !serialize_proxy.does_support_serialization() {
-            return None;
-        }
+            if !serialize_proxy.does_support_serialization() {
+                return None;
+            }
 
-        let t0 = std::time::Instant::now();
+            let t0 = std::time::Instant::now();
 
-        let path = format!(".cache/{:x}.bin", opaque_ref.addr.identity_hash);
+            let path = format!(".cache/{:x}.bin", identity_hash);
 
-        let result = if let Ok(mut f) = File::open(&path) {
-            let mut buffer = Vec::new();
+            let result = if let Ok(mut f) = File::open(&path) {
+                let mut buffer = Vec::new();
 
-            if f.read_to_end(&mut buffer).is_ok() {
-                let result = serialize_proxy.try_deserialize(&mut buffer);
-                println!("Deserialized in {:?}", t0.elapsed());
-                result
+                if f.read_to_end(&mut buffer).is_ok() {
+                    let result = serialize_proxy.try_deserialize(&mut buffer);
+                    println!("Deserialized in {:?}", t0.elapsed());
+                    result
+                } else {
+                    None
+                }
             } else {
                 None
-            }
+            };
+
+            result.map(Arc::from)
         } else {
             None
-        };
-
-        result.map(Arc::from)
+        }
     }
 
     pub fn evaluate_recipe(&self, opaque_ref: &OpaqueSnoozyRef) {
-        //println!("evaluate recipe {:?}", opaque_ref);
-
         if !self
             .being_evaluated
             .lock()

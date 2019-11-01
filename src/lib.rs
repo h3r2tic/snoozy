@@ -8,9 +8,6 @@ mod maybe_serialize;
 mod refs;
 mod whatever_hash;
 
-#[macro_use]
-mod macros;
-
 pub use iface::*;
 pub use refs::{OpaqueSnoozyRef, SnoozyRef};
 pub use whatever_hash::whatever_hash;

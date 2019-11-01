@@ -1,6 +1,8 @@
 use super::asset_reg::{RecipeBuildRecord, RecipeInfo, RecipeMeta, ASSET_REG};
 use super::maybe_serialize::MaybeSerialize;
-use super::refs::{OpaqueSnoozyAddr, OpaqueSnoozyRef, OpaqueSnoozyRefInner, SnoozyRef};
+use super::refs::{
+    OpaqueSnoozyAddr, OpaqueSnoozyRef, OpaqueSnoozyRefInner, SnoozyIdentityHash, SnoozyRef,
+};
 use super::{DefaultSnoozyHash, Result};
 use std::any::Any;
 use std::collections::HashSet;
@@ -63,25 +65,19 @@ pub trait Op: Send + 'static {
     fn name() -> &'static str;
 }
 
-pub trait SnoozyNamedOp {
-    type Res;
-    fn def_named_initial(identity_hash: u64, init_value: Self) -> SnoozyRef<Self::Res>;
-    fn redef_named(identity_hash: u64, new_value: Self);
-}
-
-pub fn def<AssetType: 'static + Send + Sync, OpType: Op<Res = AssetType> + Hash>(
+pub fn snoozy_def_binding<AssetType: 'static + Send + Sync, OpType: Op<Res = AssetType> + Hash>(
     op: OpType,
 ) -> SnoozyRef<AssetType> {
     let mut s = DefaultSnoozyHash::default();
     <OpType as std::hash::Hash>::hash(&op, &mut s);
-    def_named(s.finish(), op)
+    def_named_binding(SnoozyIdentityHash::Recipe(s.finish()), op)
 }
 
-pub fn def_named<
+fn def_named_binding<
     AssetType: 'static + Send + Sync + MaybeSerialize,
     OpType: Op<Res = AssetType> + Hash,
 >(
-    identity_hash: u64,
+    identity_hash: SnoozyIdentityHash,
     op: OpType,
 ) -> SnoozyRef<AssetType> {
     let mut s = DefaultSnoozyHash::default();
@@ -99,9 +95,7 @@ pub fn def_named<
 
     let mut refs = ASSET_REG.refs.write().unwrap();
 
-    //let opaque_addr: OpaqueSnoozyRefInner = res.clone().into();
     let opaque_addr = OpaqueSnoozyAddr::new::<AssetType>(identity_hash);
-    //let res = SnoozyRef::new(identity_hash);
 
     match refs.get(&opaque_addr).and_then(Weak::upgrade) {
         // Definition doesn't exist. Create it
@@ -123,38 +117,13 @@ pub fn def_named<
 
             SnoozyRef::new(opaque_ref)
         }
-        // Definition exists. If the hash is the same, don't do anything
+        // Definition exists, so we can just return it.
         Some(opaque_ref) => {
-            // Always Some in this branch
-            let mut entry = opaque_ref.recipe_info.write().unwrap();
-
-            if entry.recipe_hash != recipe_hash {
-                // Hash differs. Update the definition, but keep the last build record
-                entry.recipe_runner = make_recipe_runner();
-                entry.recipe_hash = recipe_hash;
-
-                // Clear any pending rebuild of this asset, and instead schedule
-                // a full rebuild including of all of its reverse dependencies.
-                entry.rebuild_pending = false;
-                ASSET_REG
-                    .queued_asset_invalidations
-                    .lock()
-                    .unwrap()
-                    .push(opaque_ref.clone());
-            }
-
+            let entry = opaque_ref.recipe_info.read().unwrap();
+            assert_eq!(entry.recipe_hash, recipe_hash);
             SnoozyRef::new(opaque_ref.clone())
         }
     }
-}
-
-pub fn def_initial<AssetType: 'static + Send + Sync, OpType: Op<Res = AssetType> + Hash>(
-    identity_hash: u64,
-    op: OpType,
-) -> SnoozyRef<AssetType> {
-    let res = def_named(identity_hash, op);
-    ASSET_REG.evaluate_recipe(&res.clone().into());
-    res
 }
 
 pub struct Snapshot;

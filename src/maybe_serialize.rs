@@ -98,6 +98,7 @@ pub trait AnySerialize: Send + Sync {
     fn does_support_serialization(&self) -> bool;
     fn try_serialize(&self, obj: &(dyn Any + Send + Sync), w: &mut Vec<u8>) -> bool;
     fn try_deserialize<'a>(&self, s: &'a mut [u8]) -> Option<Box<dyn Any + Send + Sync>>;
+    fn clone_boxed(&self) -> Box<dyn AnySerialize>;
 }
 
 pub struct AnySerializeProxy<T: Any + Sized> {
@@ -134,5 +135,11 @@ where
         } else {
             None
         }
+    }
+
+    fn clone_boxed(&self) -> Box<dyn AnySerialize> {
+        Box::new(Self {
+            phantom: PhantomData,
+        })
     }
 }
