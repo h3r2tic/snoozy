@@ -70,10 +70,10 @@ pub fn snoozy_def_binding<AssetType: 'static + Send + Sync, OpType: Op<Res = Ass
 ) -> SnoozyRef<AssetType> {
     let mut s = DefaultSnoozyHash::default();
     <OpType as std::hash::Hash>::hash(&op, &mut s);
-    def_named_binding(SnoozyIdentityHash::Recipe(s.finish()), op)
+    def_binding(SnoozyIdentityHash::Recipe(s.finish()), op)
 }
 
-fn def_named_binding<
+fn def_binding<
     AssetType: 'static + Send + Sync + MaybeSerialize,
     OpType: Op<Res = AssetType> + Hash,
 >(

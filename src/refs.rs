@@ -9,12 +9,12 @@ use std::sync::{Arc, RwLock, Weak};
 #[derive(Hash, Clone, Copy, Eq, PartialEq, Debug, Serialize)]
 pub enum SnoozyIdentityHash {
     Recipe(u64),
-    Unique(u64),
+    Named(u64),
 }
 
 impl SnoozyIdentityHash {
-    pub fn is_unique(&self) -> bool {
-        if let SnoozyIdentityHash::Unique(_) = self {
+    pub fn is_named(&self) -> bool {
+        if let SnoozyIdentityHash::Named(_) = self {
             true
         } else {
             false
@@ -112,9 +112,9 @@ impl<Res> SnoozyRef<Res> {
         self.opaque.addr.identity_hash
     }
 
-    pub fn into_dynamic(self) -> Self {
+    pub fn into_named(self) -> Self {
         let identity_hash =
-            SnoozyIdentityHash::Unique(NEXT_UNIQUE_REF.fetch_add(1, Ordering::Relaxed));
+            SnoozyIdentityHash::Named(NEXT_UNIQUE_REF.fetch_add(1, Ordering::Relaxed));
 
         Self {
             opaque: Arc::new(OpaqueSnoozyRefInner {
@@ -130,8 +130,8 @@ impl<Res> SnoozyRef<Res> {
 
     pub fn rebind(&mut self, other: Self) {
         assert!(
-            self.identity_hash().is_unique(),
-            "rebind() can only be used on dynamic slots. Use into_dynamic() first."
+            self.identity_hash().is_named(),
+            "rebind() can only be used on named refs. Use into_named() first."
         );
 
         // Evaluate the recipe in case it's used recursively in its own definition
