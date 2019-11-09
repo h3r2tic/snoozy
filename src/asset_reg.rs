@@ -246,11 +246,6 @@ impl AssetReg {
             return;
         }
 
-        self.being_evaluated
-            .lock()
-            .unwrap()
-            .insert(opaque_ref.clone());
-
         let (rebuild_pending, recipe_runner) = {
             let recipe_info = &opaque_ref.recipe_info;
             let recipe_info = recipe_info.read().unwrap();
@@ -265,6 +260,7 @@ impl AssetReg {
             let mut ctx = Context {
                 opaque_ref: opaque_ref.clone(),
                 dependencies: HashSet::new(),
+                dependency_build_time: Default::default(),
             };
 
             //println!("Running {}", recipe_info.recipe_meta.op_name);
@@ -275,7 +271,7 @@ impl AssetReg {
                 } else {
                     let t0 = std::time::Instant::now();
                     let res = (recipe_runner)(&mut ctx);
-                    let build_duration = t0.elapsed();
+                    let build_duration = t0.elapsed() - ctx.dependency_build_time;
 
                     let should_cache = build_duration > std::time::Duration::from_millis(100);
                     if should_cache {
