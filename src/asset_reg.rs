@@ -57,9 +57,12 @@ impl Clone for RecipeMeta {
     }
 }
 
+pub trait RecipeRunner {
+    fn run(&self, ctx: &mut Context) -> Result<Arc<dyn Any + Send + Sync>>;
+}
+
 pub(crate) struct RecipeInfo {
-    pub recipe_runner:
-        Arc<dyn (Fn(&mut Context) -> Result<Arc<dyn Any + Send + Sync>>) + Send + Sync>,
+    pub recipe_runner: Arc<Mutex<dyn RecipeRunner + Send>>,
     pub recipe_meta: RecipeMeta,
     pub recipe_hash: u64,
 
@@ -270,7 +273,7 @@ impl AssetReg {
                     (Ok(cached), false)
                 } else {
                     let t0 = std::time::Instant::now();
-                    let res = (recipe_runner)(&mut ctx);
+                    let res = recipe_runner.lock().unwrap().run(&mut ctx);
                     let build_duration = t0.elapsed() - ctx.dependency_build_time;
 
                     let should_cache = build_duration > std::time::Duration::from_millis(100);

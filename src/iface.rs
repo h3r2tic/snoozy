@@ -1,4 +1,4 @@
-use super::asset_reg::{RecipeBuildRecord, RecipeInfo, RecipeMeta, ASSET_REG};
+use super::asset_reg::{RecipeBuildRecord, RecipeInfo, RecipeMeta, RecipeRunner, ASSET_REG};
 use super::maybe_serialize::MaybeSerialize;
 use super::refs::{
     OpaqueSnoozyAddr, OpaqueSnoozyRef, OpaqueSnoozyRefInner, SnoozyIdentityHash, SnoozyRef,
@@ -69,6 +69,17 @@ pub trait Op: Send + 'static {
     fn name() -> &'static str;
 }
 
+impl<T> RecipeRunner for T
+where
+    T: Op,
+    T::Res: 'static + Send + Sync,
+{
+    fn run(&self, ctx: &mut Context) -> Result<Arc<dyn Any + Send + Sync>> {
+        let build_result = self.run(ctx)?;
+        Ok(Arc::new(build_result))
+    }
+}
+
 pub fn snoozy_def_binding<AssetType: 'static + Send + Sync, OpType: Op<Res = AssetType> + Hash>(
     op: OpType,
 ) -> SnoozyRef<AssetType> {
@@ -88,15 +99,6 @@ fn def_binding<
     <OpType as std::hash::Hash>::hash(&op, &mut s);
     let recipe_hash = s.finish();
 
-    let make_recipe_runner = || -> Arc<dyn (Fn(&mut Context) -> _) + Send + Sync> {
-        let op_mutex = Mutex::new(op);
-        Arc::new(move |mut ctx| -> Result<Arc<dyn Any + Send + Sync>> {
-            //println!("Running recipe {:?} ({})", &*op_mutex.lock().unwrap(), identity_hash);
-            let build_result = op_mutex.lock().unwrap().run(&mut ctx)?;
-            Ok(Arc::new(build_result))
-        })
-    };
-
     let mut refs = ASSET_REG.refs.write().unwrap();
 
     let opaque_addr = OpaqueSnoozyAddr::new::<AssetType>(identity_hash);
@@ -105,7 +107,7 @@ fn def_binding<
         // Definition doesn't exist. Create it
         None => {
             let recipe_info = RwLock::new(RecipeInfo {
-                recipe_runner: make_recipe_runner(),
+                recipe_runner: Arc::new(Mutex::new(op)),
                 recipe_meta: RecipeMeta::new::<AssetType>(<OpType as Op>::name()),
                 rebuild_pending: true,
                 build_record: None,
