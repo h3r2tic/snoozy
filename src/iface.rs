@@ -8,7 +8,7 @@ use std::any::Any;
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::pin::Pin;
-use std::sync::{Arc, RwLock, Weak};
+use std::sync::{atomic::AtomicBool, Arc, RwLock, Weak};
 
 pub struct Context {
     pub(crate) opaque_ref: OpaqueSnoozyRef, // Handle for the asset that this Context was created for
@@ -117,6 +117,7 @@ fn def_binding<
             let opaque_ref = Arc::new(OpaqueSnoozyRefInner {
                 addr: opaque_addr.clone(),
                 recipe_info,
+                being_evaluated: AtomicBool::new(false),
             });
 
             refs.insert(opaque_addr, Arc::downgrade(&opaque_ref));

@@ -6,7 +6,7 @@ use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{Read, Write};
-use std::sync::{Arc, Mutex, RwLock, Weak};
+use std::sync::{atomic, Arc, Mutex, RwLock, Weak};
 
 pub struct RecipeBuildRecord {
     pub last_valid_build_result: Arc<dyn Any + Send + Sync>,
@@ -132,13 +132,11 @@ lazy_static! {
         AssetReg {
             refs: Default::default(),
             queued_asset_invalidations: Default::default(),
-            being_evaluated: Default::default(),
         }
     };
 }
 
 pub(crate) struct AssetReg {
-    being_evaluated: Mutex<HashSet<OpaqueSnoozyRef>>,
     pub refs: RwLock<HashMap<OpaqueSnoozyAddr, WeakOpaqueSnoozyRef>>,
     pub queued_asset_invalidations: Arc<Mutex<Vec<OpaqueSnoozyRef>>>,
 }
@@ -251,11 +249,9 @@ impl AssetReg {
             opaque_ref.recipe_info.read().unwrap().recipe_meta.op_name
         );*/
 
-        if !self
+        if opaque_ref
             .being_evaluated
-            .lock()
-            .unwrap()
-            .insert(opaque_ref.clone())
+            .swap(true, atomic::Ordering::Relaxed)
         {
             //println!("recipe already being evaluated");
             return;
@@ -319,7 +315,7 @@ impl AssetReg {
 
                     for dep in &build_record_diff.removed_deps {
                         // Don't keep circular dependencies
-                        if self.being_evaluated.lock().unwrap().contains(dep) {
+                        if dep.being_evaluated.load(atomic::Ordering::Relaxed) {
                             continue;
                         }
 
@@ -337,7 +333,7 @@ impl AssetReg {
 
                     for dep in &build_record_diff.added_deps {
                         // Don't keep circular dependencies
-                        if self.being_evaluated.lock().unwrap().contains(dep) {
+                        if dep.being_evaluated.load(atomic::Ordering::Relaxed) {
                             continue;
                         }
 
@@ -372,6 +368,8 @@ impl AssetReg {
             }
         }
 
-        self.being_evaluated.lock().unwrap().remove(opaque_ref);
+        opaque_ref
+            .being_evaluated
+            .store(false, atomic::Ordering::Relaxed);
     }
 }

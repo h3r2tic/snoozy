@@ -4,7 +4,7 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::mem::transmute;
-use std::sync::{Arc, RwLock, Weak};
+use std::sync::{atomic::AtomicBool, Arc, RwLock, Weak};
 
 #[derive(Hash, Clone, Copy, Eq, PartialEq, Debug, Serialize)]
 pub struct SnoozyIdentityHash(pub(crate) u64);
@@ -39,6 +39,7 @@ impl Serialize for OpaqueSnoozyAddr {
 pub struct OpaqueSnoozyRefInner {
     pub(crate) addr: OpaqueSnoozyAddr,
     pub(crate) recipe_info: RwLock<crate::asset_reg::RecipeInfo>,
+    pub(crate) being_evaluated: AtomicBool,
 }
 
 impl OpaqueSnoozyRefInner {
@@ -46,6 +47,7 @@ impl OpaqueSnoozyRefInner {
         Self {
             addr: self.addr.clone(),
             recipe_info: RwLock::new(self.recipe_info.read().unwrap().clone_desc()),
+            being_evaluated: AtomicBool::new(false),
         }
     }
 }
