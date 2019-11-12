@@ -20,7 +20,7 @@ impl RecipeBuildRecord {
     fn get_valid_reverse_dependencies(&self) -> HashSet<OpaqueSnoozyRef> {
         self.reverse_dependencies
             .iter()
-            .filter_map(Weak::upgrade)
+            .filter_map(|a| Some(OpaqueSnoozyRef(Weak::upgrade(a)?)))
             .collect()
     }
 }
@@ -57,12 +57,12 @@ impl Clone for RecipeMeta {
     }
 }
 
-pub trait RecipeRunner {
+pub trait RecipeRunner: Send + Sync {
     fn run(&self, ctx: &mut Context) -> Result<Arc<dyn Any + Send + Sync>>;
 }
 
 pub(crate) struct RecipeInfo {
-    pub recipe_runner: Arc<Mutex<dyn RecipeRunner + Send>>,
+    pub recipe_runner: Arc<dyn RecipeRunner>,
     pub recipe_meta: RecipeMeta,
     pub recipe_hash: u64,
 
@@ -76,6 +76,15 @@ struct BuildRecordDiff {
 }
 
 impl RecipeInfo {
+    pub(crate) fn replace_desc(&mut self, other: RecipeInfo) {
+        self.recipe_runner = other.recipe_runner;
+        self.recipe_meta = other.recipe_meta;
+        self.rebuild_pending = other.rebuild_pending;
+        self.recipe_hash = other.recipe_hash;
+
+        // Don't replace the build_record
+    }
+
     fn set_new_build_result(
         &mut self,
         build_result: Arc<dyn Any + Send + Sync>,
@@ -98,7 +107,7 @@ impl RecipeInfo {
             dependencies,
             // Keep the previous reverse dependencies. Until the dependent assets get rebuild,
             // we must assume they still depend on the current asset.
-            reverse_dependencies: prev_rev_deps.iter().map(Arc::downgrade).collect(),
+            reverse_dependencies: prev_rev_deps.iter().map(|a| Arc::downgrade(&a.0)).collect(),
         });
 
         BuildRecordDiff {
@@ -150,11 +159,13 @@ impl AssetReg {
         let mut recipe_info = recipe_info.write().unwrap();
         recipe_info.rebuild_pending = true;
 
+        //dbg!(recipe_info.recipe_meta.op_name);
+
         if let Some(ref build_record) = recipe_info.build_record {
             for dep in build_record
                 .reverse_dependencies
                 .iter()
-                .filter_map(Weak::upgrade)
+                .filter_map(|a| Some(OpaqueSnoozyRef(Weak::upgrade(a)?)))
             {
                 self.invalidate_asset_tree(&dep);
             }
@@ -167,36 +178,35 @@ impl AssetReg {
         asset: &(dyn Any + Send + Sync),
         recipe_info: &RecipeInfo,
     ) {
-        if let SnoozyIdentityHash::Recipe(identity_hash) = opaque_ref.identity_hash {
-            let serialize_proxy = &*recipe_info.recipe_meta.serialize_proxy as &dyn AnySerialize;
+        let identity_hash = opaque_ref.identity_hash.0;
+        let serialize_proxy = &*recipe_info.recipe_meta.serialize_proxy as &dyn AnySerialize;
 
-            if !serialize_proxy.does_support_serialization() {
-                return;
-            }
+        if !serialize_proxy.does_support_serialization() {
+            return;
+        }
 
-            println!(
-                "The result ({}) supports serialization, and we'll cache it.",
-                recipe_info.recipe_meta.result_type_name
-            );
+        println!(
+            "The result ({}) supports serialization, and we'll cache it.",
+            recipe_info.recipe_meta.result_type_name
+        );
 
-            let _ = std::fs::create_dir(".cache");
+        let _ = std::fs::create_dir(".cache");
 
-            let t0 = std::time::Instant::now();
+        let t0 = std::time::Instant::now();
 
-            let mut data: Vec<u8> = Vec::new();
-            serialize_proxy.try_serialize(asset, &mut data);
+        let mut data: Vec<u8> = Vec::new();
+        serialize_proxy.try_serialize(asset, &mut data);
 
-            println!(
-                "Serialized into {} in {:?}",
-                pretty_bytes::converter::convert(data.len() as f64),
-                t0.elapsed()
-            );
+        println!(
+            "Serialized into {} in {:?}",
+            pretty_bytes::converter::convert(data.len() as f64),
+            t0.elapsed()
+        );
 
-            let path = format!(".cache/{:x}.bin", identity_hash);
-            let mut f = File::create(&path).expect("Unable to create file");
-            if f.write_all(data.as_slice()).is_err() {
-                let _ = std::fs::remove_file(&path);
-            }
+        let path = format!(".cache/{:x}.bin", identity_hash);
+        let mut f = File::create(&path).expect("Unable to create file");
+        if f.write_all(data.as_slice()).is_err() {
+            let _ = std::fs::remove_file(&path);
         }
     }
 
@@ -204,41 +214,43 @@ impl AssetReg {
         &self,
         opaque_ref: &OpaqueSnoozyRef,
     ) -> Option<Arc<dyn Any + Send + Sync>> {
-        if let SnoozyIdentityHash::Recipe(identity_hash) = opaque_ref.addr.identity_hash {
-            let recipe_info = &opaque_ref.recipe_info;
-            let recipe_info = recipe_info.read().unwrap();
+        let identity_hash = opaque_ref.addr.identity_hash.0;
+        let recipe_info = &opaque_ref.recipe_info;
+        let recipe_info = recipe_info.read().unwrap();
 
-            let serialize_proxy = &*recipe_info.recipe_meta.serialize_proxy as &dyn AnySerialize;
+        let serialize_proxy = &*recipe_info.recipe_meta.serialize_proxy as &dyn AnySerialize;
 
-            if !serialize_proxy.does_support_serialization() {
-                return None;
-            }
+        if !serialize_proxy.does_support_serialization() {
+            return None;
+        }
 
-            let t0 = std::time::Instant::now();
+        let t0 = std::time::Instant::now();
 
-            let path = format!(".cache/{:x}.bin", identity_hash);
+        let path = format!(".cache/{:x}.bin", identity_hash);
 
-            let result = if let Ok(mut f) = File::open(&path) {
-                let mut buffer = Vec::new();
+        let result = if let Ok(mut f) = File::open(&path) {
+            let mut buffer = Vec::new();
 
-                if f.read_to_end(&mut buffer).is_ok() {
-                    let result = serialize_proxy.try_deserialize(&mut buffer);
-                    println!("Deserialized in {:?}", t0.elapsed());
-                    result
-                } else {
-                    None
-                }
+            if f.read_to_end(&mut buffer).is_ok() {
+                let result = serialize_proxy.try_deserialize(&mut buffer);
+                println!("Deserialized in {:?}", t0.elapsed());
+                result
             } else {
                 None
-            };
-
-            result.map(Arc::from)
+            }
         } else {
             None
-        }
+        };
+
+        result.map(Arc::from)
     }
 
     pub fn evaluate_recipe(&self, opaque_ref: &OpaqueSnoozyRef) {
+        /*println!(
+            "evaluate_recipe({})",
+            opaque_ref.recipe_info.read().unwrap().recipe_meta.op_name
+        );*/
+
         if !self
             .being_evaluated
             .lock()
@@ -266,14 +278,17 @@ impl AssetReg {
                 dependency_build_time: Default::default(),
             };
 
-            //println!("Running {}", recipe_info.recipe_meta.op_name);
+            /*println!(
+                "Running {}",
+                opaque_ref.recipe_info.read().unwrap().recipe_meta.op_name
+            );*/
 
             let (res_or_err, should_cache) = {
                 if let Some(cached) = { self.get_cached_build_result(&opaque_ref) } {
                     (Ok(cached), false)
                 } else {
                     let t0 = std::time::Instant::now();
-                    let res = recipe_runner.lock().unwrap().run(&mut ctx);
+                    let res = recipe_runner.run(&mut ctx);
                     let build_duration = t0.elapsed() - ctx.dependency_build_time;
 
                     let should_cache = build_duration > std::time::Duration::from_millis(100);
@@ -310,7 +325,7 @@ impl AssetReg {
 
                         let dep = &dep.recipe_info;
                         let mut dep = dep.write().unwrap();
-                        let to_remove: *const OpaqueSnoozyRefInner = &**opaque_ref;
+                        let to_remove: *const OpaqueSnoozyRefInner = &***opaque_ref;
 
                         if let Some(ref mut build_record) = dep.build_record {
                             build_record.reverse_dependencies.retain(|r| {
@@ -328,7 +343,7 @@ impl AssetReg {
 
                         let dep = &dep.recipe_info;
                         let mut dep = dep.write().unwrap();
-                        let to_add: *const OpaqueSnoozyRefInner = &**opaque_ref;
+                        let to_add: *const OpaqueSnoozyRefInner = &***opaque_ref;
 
                         if let Some(ref mut build_record) = dep.build_record {
                             let exists = build_record

@@ -7,20 +7,7 @@ use std::mem::transmute;
 use std::sync::{Arc, RwLock, Weak};
 
 #[derive(Hash, Clone, Copy, Eq, PartialEq, Debug, Serialize)]
-pub enum SnoozyIdentityHash {
-    Recipe(u64),
-    Named(u64),
-}
-
-impl SnoozyIdentityHash {
-    pub fn is_named(&self) -> bool {
-        if let SnoozyIdentityHash::Named(_) = self {
-            true
-        } else {
-            false
-        }
-    }
-}
+pub struct SnoozyIdentityHash(pub(crate) u64);
 
 #[derive(Hash, Clone, Eq, PartialEq, Debug)]
 pub struct OpaqueSnoozyAddr {
@@ -54,17 +41,12 @@ pub struct OpaqueSnoozyRefInner {
     pub(crate) recipe_info: RwLock<crate::asset_reg::RecipeInfo>,
 }
 
-impl PartialEq for OpaqueSnoozyRefInner {
-    fn eq(&self, other: &Self) -> bool {
-        self.addr == other.addr
-    }
-}
-
-impl Eq for OpaqueSnoozyRefInner {}
-
-impl Hash for OpaqueSnoozyRefInner {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.addr.hash(state);
+impl OpaqueSnoozyRefInner {
+    fn clone_desc(&self) -> Self {
+        Self {
+            addr: self.addr.clone(),
+            recipe_info: RwLock::new(self.recipe_info.read().unwrap().clone_desc()),
+        }
     }
 }
 
@@ -87,23 +69,48 @@ impl Serialize for OpaqueSnoozyRefInner {
     }
 }
 
-pub type OpaqueSnoozyRef = Arc<OpaqueSnoozyRefInner>;
+#[derive(Clone, Serialize)]
+pub struct OpaqueSnoozyRef(pub Arc<OpaqueSnoozyRefInner>);
+
+impl std::ops::Deref for OpaqueSnoozyRef {
+    type Target = Arc<OpaqueSnoozyRefInner>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl PartialEq for OpaqueSnoozyRef {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::eq(
+            &*self.0 as *const OpaqueSnoozyRefInner,
+            &*other.0 as *const OpaqueSnoozyRefInner,
+        )
+    }
+}
+impl Eq for OpaqueSnoozyRef {}
+
 pub type WeakOpaqueSnoozyRef = Weak<OpaqueSnoozyRefInner>;
+
+impl Hash for OpaqueSnoozyRef {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        let ptr = &***self as *const OpaqueSnoozyRefInner as usize;
+        ptr.hash(state);
+    }
+}
 
 #[derive(Hash, Serialize)]
 pub struct SnoozyRef<Res> {
     pub opaque: OpaqueSnoozyRef,
+    made_unique: bool,
     phantom: PhantomData<Res>,
 }
-
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static NEXT_UNIQUE_REF: AtomicU64 = AtomicU64::new(0);
 
 impl<Res> SnoozyRef<Res> {
     pub fn new(opaque: OpaqueSnoozyRef) -> Self {
         Self {
             opaque,
+            made_unique: false,
             phantom: PhantomData,
         }
     }
@@ -112,41 +119,37 @@ impl<Res> SnoozyRef<Res> {
         self.opaque.addr.identity_hash
     }
 
-    pub fn into_named(self) -> Self {
-        let identity_hash =
-            SnoozyIdentityHash::Named(NEXT_UNIQUE_REF.fetch_add(1, Ordering::Relaxed));
-
-        Self {
-            opaque: Arc::new(OpaqueSnoozyRefInner {
-                addr: OpaqueSnoozyAddr {
-                    identity_hash,
-                    type_id: self.opaque.addr.type_id,
-                },
-                recipe_info: RwLock::new(self.opaque.recipe_info.read().unwrap().clone_desc()),
-            }),
-            phantom: PhantomData,
-        }
+    pub fn make_unique(mut self) -> Self {
+        self.opaque = OpaqueSnoozyRef(Arc::new((*self.opaque).clone_desc()));
+        self.made_unique = true;
+        self
     }
 
     pub fn rebind(&mut self, other: Self) {
         assert!(
-            self.identity_hash().is_named(),
-            "rebind() can only be used on named refs. Use into_named() first."
+            self.made_unique,
+            "rebind() can only be used on unique refs. Use make_unique() first."
         );
 
         // Evaluate the recipe in case it's used recursively in its own definition
         crate::asset_reg::ASSET_REG.evaluate_recipe(&self.opaque);
 
-        let mut entry = self.opaque.recipe_info.write().unwrap();
+        let hash_difference = {
+            let entry = self.opaque.recipe_info.read().unwrap();
+            let other_entry = other.opaque.recipe_info.read().unwrap();
+            entry.recipe_hash != other_entry.recipe_hash
+        };
 
-        let other_entry = other.opaque.recipe_info.read().unwrap();
+        let mut info = self.opaque.recipe_info.write().unwrap();
+        let other_info = Arc::try_unwrap(other.opaque.0)
+            .expect("Rebind source must have only one reference")
+            .recipe_info
+            .into_inner()
+            .unwrap();
 
-        if entry.recipe_hash != other_entry.recipe_hash {
-            let clone_desc = other_entry.clone_desc();
-            entry.recipe_runner = clone_desc.recipe_runner;
-            entry.recipe_meta = clone_desc.recipe_meta;
-            entry.recipe_hash = clone_desc.recipe_hash;
+        info.replace_desc(other_info);
 
+        if hash_difference {
             // Schedule a full rebuild including of all of its reverse dependencies.
             crate::asset_reg::ASSET_REG
                 .queued_asset_invalidations
@@ -174,6 +177,7 @@ impl<Res> Clone for SnoozyRef<Res> {
     fn clone(&self) -> Self {
         SnoozyRef {
             opaque: self.opaque.clone(),
+            made_unique: false, // Must call `make_unique` on the original handle
             phantom: PhantomData,
         }
     }

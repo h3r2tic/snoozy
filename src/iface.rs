@@ -8,7 +8,7 @@ use std::any::Any;
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::pin::Pin;
-use std::sync::{Arc, Mutex, RwLock, Weak};
+use std::sync::{Arc, RwLock, Weak};
 
 pub struct Context {
     pub(crate) opaque_ref: OpaqueSnoozyRef, // Handle for the asset that this Context was created for
@@ -56,13 +56,13 @@ impl Context {
             }) => Ok(get_pinned_result(last_valid_build_result.clone())),
             _ => Err(format_err!(
                 "Requested asset {:?} failed to build",
-                opaque_ref
+                *opaque_ref
             )),
         }
     }
 }
 
-pub trait Op: Send + 'static {
+pub trait Op: Send + Sync + 'static {
     type Res;
 
     fn run(&self, ctx: &mut Context) -> Result<Self::Res>;
@@ -85,7 +85,7 @@ pub fn snoozy_def_binding<AssetType: 'static + Send + Sync, OpType: Op<Res = Ass
 ) -> SnoozyRef<AssetType> {
     let mut s = DefaultSnoozyHash::default();
     <OpType as std::hash::Hash>::hash(&op, &mut s);
-    def_binding(SnoozyIdentityHash::Recipe(s.finish()), op)
+    def_binding(SnoozyIdentityHash(s.finish()), op)
 }
 
 fn def_binding<
@@ -107,7 +107,7 @@ fn def_binding<
         // Definition doesn't exist. Create it
         None => {
             let recipe_info = RwLock::new(RecipeInfo {
-                recipe_runner: Arc::new(Mutex::new(op)),
+                recipe_runner: Arc::new(op),
                 recipe_meta: RecipeMeta::new::<AssetType>(<OpType as Op>::name()),
                 rebuild_pending: true,
                 build_record: None,
@@ -121,13 +121,13 @@ fn def_binding<
 
             refs.insert(opaque_addr, Arc::downgrade(&opaque_ref));
 
-            SnoozyRef::new(opaque_ref)
+            SnoozyRef::new(OpaqueSnoozyRef(opaque_ref))
         }
         // Definition exists, so we can just return it.
         Some(opaque_ref) => {
             let entry = opaque_ref.recipe_info.read().unwrap();
             assert_eq!(entry.recipe_hash, recipe_hash);
-            SnoozyRef::new(opaque_ref.clone())
+            SnoozyRef::new(OpaqueSnoozyRef(opaque_ref.clone()))
         }
     }
 }
@@ -147,7 +147,7 @@ impl Snapshot {
                 ref last_valid_build_result,
                 ..
             }) => get_pinned_result(last_valid_build_result.clone()),
-            None => panic!("Requested asset {:?} failed to build", opaque_ref),
+            None => panic!("Requested asset {:?} failed to build", *opaque_ref),
         }
     }
 }
