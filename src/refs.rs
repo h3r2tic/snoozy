@@ -104,7 +104,7 @@ impl Hash for OpaqueSnoozyRef {
 #[derive(Hash, Serialize)]
 pub struct SnoozyRef<Res> {
     pub opaque: OpaqueSnoozyRef,
-    made_unique: bool,
+    isolated: bool,
     phantom: PhantomData<Res>,
 }
 
@@ -112,7 +112,7 @@ impl<Res> SnoozyRef<Res> {
     pub fn new(opaque: OpaqueSnoozyRef) -> Self {
         Self {
             opaque,
-            made_unique: false,
+            isolated: false,
             phantom: PhantomData,
         }
     }
@@ -121,16 +121,16 @@ impl<Res> SnoozyRef<Res> {
         self.opaque.addr.identity_hash
     }
 
-    pub fn make_unique(mut self) -> Self {
+    pub fn isolate(mut self) -> Self {
         self.opaque = OpaqueSnoozyRef(Arc::new((*self.opaque).clone_desc()));
-        self.made_unique = true;
+        self.isolated = true;
         self
     }
 
     pub fn rebind(&mut self, other: Self) {
         assert!(
-            self.made_unique,
-            "rebind() can only be used on unique refs. Use make_unique() first."
+            self.isolated,
+            "rebind() can only be used on isolated refs. Use isolate() first."
         );
 
         // Evaluate the recipe in case it's used recursively in its own definition
@@ -179,7 +179,7 @@ impl<Res> Clone for SnoozyRef<Res> {
     fn clone(&self) -> Self {
         SnoozyRef {
             opaque: self.opaque.clone(),
-            made_unique: false, // Must call `make_unique` on the original handle
+            isolated: false, // Must call `isolate()` on the original handle
             phantom: PhantomData,
         }
     }
