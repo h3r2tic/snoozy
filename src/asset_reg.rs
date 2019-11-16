@@ -2,6 +2,7 @@ use super::iface::Context;
 use super::maybe_serialize::{AnySerialize, AnySerializeProxy, MaybeSerialize};
 use super::refs::*;
 use super::Result;
+use async_trait::async_trait;
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -57,8 +58,10 @@ impl Clone for RecipeMeta {
     }
 }
 
+#[async_trait]
 pub trait RecipeRunner: Send + Sync {
-    fn run(&self, ctx: &mut Context) -> Result<Arc<dyn Any + Send + Sync>>;
+    //async fn run(&self, ctx: &mut Context) -> Result<Arc<dyn Any + Send + Sync>>;
+    async fn run(&self, ctx: Context) -> (Context, Result<Arc<dyn Any + Send + Sync>>);
 }
 
 pub(crate) struct RecipeInfo {
@@ -243,7 +246,7 @@ impl AssetReg {
         result.map(Arc::from)
     }
 
-    pub fn evaluate_recipe(&self, opaque_ref: &OpaqueSnoozyRef) {
+    pub async fn evaluate_recipe(&self, opaque_ref: &OpaqueSnoozyRef) {
         /*println!(
             "evaluate_recipe({})",
             opaque_ref.recipe_info.read().unwrap().recipe_meta.op_name
@@ -268,7 +271,7 @@ impl AssetReg {
         };
 
         if rebuild_pending {
-            let mut ctx = Context {
+            let ctx = Context {
                 opaque_ref: opaque_ref.clone(),
                 dependencies: HashSet::new(),
                 dependency_build_time: Default::default(),
@@ -279,12 +282,12 @@ impl AssetReg {
                 opaque_ref.recipe_info.read().unwrap().recipe_meta.op_name
             );*/
 
-            let (res_or_err, should_cache) = {
+            let (ctx, res_or_err, should_cache) = {
                 if let Some(cached) = { self.get_cached_build_result(&opaque_ref) } {
-                    (Ok(cached), false)
+                    (ctx, Ok(cached), false)
                 } else {
                     let t0 = std::time::Instant::now();
-                    let res = recipe_runner.run(&mut ctx);
+                    let (ctx, res) = recipe_runner.run(ctx).await;
                     let build_duration = t0.elapsed() - ctx.dependency_build_time;
 
                     let should_cache = build_duration > std::time::Duration::from_millis(100);
@@ -297,7 +300,7 @@ impl AssetReg {
                         );
                     }
 
-                    (res, should_cache)
+                    (ctx, res, should_cache)
                 }
             };
 

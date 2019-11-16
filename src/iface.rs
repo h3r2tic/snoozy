@@ -4,6 +4,7 @@ use super::refs::{
     OpaqueSnoozyAddr, OpaqueSnoozyRef, OpaqueSnoozyRefInner, SnoozyIdentityHash, SnoozyRef,
 };
 use super::{DefaultSnoozyHash, Result};
+use async_trait::async_trait;
 use std::any::Any;
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
@@ -33,7 +34,7 @@ impl Context {
         }
     }
 
-    pub fn get<Res: 'static + Send + Sync, SnoozyT: Into<SnoozyRef<Res>>>(
+    pub async fn get<Res: 'static + Send + Sync, SnoozyT: Into<SnoozyRef<Res>>>(
         &mut self,
         asset_ref: SnoozyT,
     ) -> Result<Pin<Arc<Res>>> {
@@ -43,7 +44,7 @@ impl Context {
         self.dependencies.insert(opaque_ref.clone());
 
         let t0 = std::time::Instant::now();
-        ASSET_REG.evaluate_recipe(&opaque_ref);
+        ASSET_REG.evaluate_recipe(&opaque_ref).await;
         self.dependency_build_time += t0.elapsed();
 
         let recipe_info = &opaque_ref.recipe_info;
@@ -65,18 +66,25 @@ impl Context {
 pub trait Op: Send + Sync + 'static {
     type Res;
 
-    fn run(&self, ctx: &mut Context) -> Result<Self::Res>;
+    fn run<'a>(
+        &'a self,
+        ctx: Context,
+    ) -> Pin<Box<dyn futures::Future<Output = (Context, Result<Self::Res>)> + Send + 'a>>;
     fn name() -> &'static str;
 }
 
+#[async_trait]
 impl<T> RecipeRunner for T
 where
     T: Op,
-    T::Res: 'static + Send + Sync,
+    T::Res: 'static + Send + Sync + Any,
 {
-    fn run(&self, ctx: &mut Context) -> Result<Arc<dyn Any + Send + Sync>> {
-        let build_result = self.run(ctx)?;
-        Ok(Arc::new(build_result))
+    async fn run(&self, ctx: Context) -> (Context, Result<Arc<dyn Any + Send + Sync>>) {
+        let (ctx, build_result): (Context, Result<T::Res>) = Op::run(self, ctx).await;
+        (
+            ctx,
+            build_result.map(|r| -> Arc<dyn Any + Send + Sync> { Arc::new(r) }),
+        )
     }
 }
 
@@ -135,10 +143,13 @@ fn def_binding<
 
 pub struct Snapshot;
 impl Snapshot {
-    pub fn get<Res: 'static + Send + Sync>(&self, asset_ref: SnoozyRef<Res>) -> Pin<Arc<Res>> {
+    pub async fn get<Res: 'static + Send + Sync>(
+        &self,
+        asset_ref: SnoozyRef<Res>,
+    ) -> Pin<Arc<Res>> {
         let opaque_ref: OpaqueSnoozyRef = asset_ref.into();
 
-        ASSET_REG.evaluate_recipe(&opaque_ref);
+        ASSET_REG.evaluate_recipe(&opaque_ref).await;
 
         let recipe_info = &opaque_ref.recipe_info;
         let recipe_info = recipe_info.read().unwrap();
@@ -155,9 +166,14 @@ impl Snapshot {
 
 pub fn with_snapshot<F, Ret>(callback: F) -> Ret
 where
-    F: FnOnce(&mut Snapshot) -> Ret,
+    F: FnOnce(Snapshot) -> Ret,
 {
     ASSET_REG.propagate_invalidations();
-    let mut snap = Snapshot;
-    callback(&mut snap)
+    callback(Snapshot)
+}
+
+pub fn get_snapshot() -> Snapshot
+{
+    ASSET_REG.propagate_invalidations();
+    Snapshot
 }

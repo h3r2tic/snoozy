@@ -8,6 +8,7 @@ mod maybe_serialize;
 mod refs;
 mod whatever_hash;
 
+pub use futures;
 pub use iface::*;
 pub use refs::{OpaqueSnoozyRef, SnoozyRef};
 pub use whatever_hash::whatever_hash;

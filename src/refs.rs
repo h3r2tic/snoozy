@@ -1,3 +1,4 @@
+use futures::executor::block_on;
 use serde::{ser::SerializeTuple, Serialize, Serializer};
 use std::any::TypeId;
 use std::fmt;
@@ -134,7 +135,7 @@ impl<Res> SnoozyRef<Res> {
         );
 
         // Evaluate the recipe in case it's used recursively in its own definition
-        crate::asset_reg::ASSET_REG.evaluate_recipe(&self.opaque);
+        block_on(crate::asset_reg::ASSET_REG.evaluate_recipe(&self.opaque));
 
         let hash_difference = {
             let entry = self.opaque.recipe_info.read().unwrap();

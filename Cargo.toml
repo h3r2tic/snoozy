@@ -13,3 +13,5 @@ bincode = "1.2"
 twox-hash = "1.5"
 pretty-bytes = "0.2"
 abomonation = "0.7"
+futures-preview = { version = "=0.3.0-alpha.19", features = ["compat"] }
+async-trait = "0.1.17"
