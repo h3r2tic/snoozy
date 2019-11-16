@@ -9,12 +9,12 @@ use std::any::Any;
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::pin::Pin;
-use std::sync::{atomic::AtomicBool, Arc, RwLock, Weak};
+use std::sync::{atomic::AtomicBool, Arc, Mutex, RwLock, Weak};
 
 pub struct Context {
     pub(crate) opaque_ref: OpaqueSnoozyRef, // Handle for the asset that this Context was created for
-    pub(crate) dependencies: HashSet<OpaqueSnoozyRef>,
-    pub(crate) dependency_build_time: std::time::Duration,
+    pub(crate) dependencies: Mutex<HashSet<OpaqueSnoozyRef>>,
+    pub(crate) dependency_build_time: Mutex<std::time::Duration>,
 }
 
 fn get_pinned_result<T>(p: Arc<dyn Any + Send + Sync>) -> Pin<Arc<T>>
@@ -35,17 +35,17 @@ impl Context {
     }
 
     pub async fn get<Res: 'static + Send + Sync, SnoozyT: Into<SnoozyRef<Res>>>(
-        &mut self,
+        &self,
         asset_ref: SnoozyT,
     ) -> Result<Pin<Arc<Res>>> {
         let asset_ref = asset_ref.into();
         let opaque_ref: OpaqueSnoozyRef = asset_ref.opaque;
 
-        self.dependencies.insert(opaque_ref.clone());
+        self.dependencies.lock().unwrap().insert(opaque_ref.clone());
 
         let t0 = std::time::Instant::now();
         ASSET_REG.evaluate_recipe(&opaque_ref).await;
-        self.dependency_build_time += t0.elapsed();
+        *self.dependency_build_time.lock().unwrap() += t0.elapsed();
 
         let recipe_info = &opaque_ref.recipe_info;
         let recipe_info = recipe_info.read().unwrap();
@@ -172,8 +172,7 @@ where
     callback(Snapshot)
 }
 
-pub fn get_snapshot() -> Snapshot
-{
+pub fn get_snapshot() -> Snapshot {
     ASSET_REG.propagate_invalidations();
     Snapshot
 }

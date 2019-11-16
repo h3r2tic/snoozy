@@ -273,8 +273,8 @@ impl AssetReg {
         if rebuild_pending {
             let ctx = Context {
                 opaque_ref: opaque_ref.clone(),
-                dependencies: HashSet::new(),
-                dependency_build_time: Default::default(),
+                dependencies: Mutex::new(HashSet::new()),
+                dependency_build_time: Mutex::new(Default::default()),
             };
 
             /*println!(
@@ -288,7 +288,7 @@ impl AssetReg {
                 } else {
                     let t0 = std::time::Instant::now();
                     let (ctx, res) = recipe_runner.run(ctx).await;
-                    let build_duration = t0.elapsed() - ctx.dependency_build_time;
+                    let build_duration = t0.elapsed() - *ctx.dependency_build_time.lock().unwrap();
 
                     let should_cache = build_duration > std::time::Duration::from_millis(100);
                     if should_cache {
@@ -314,7 +314,8 @@ impl AssetReg {
                     }
 
                     recipe_info.rebuild_pending = false;
-                    let build_record_diff = recipe_info.set_new_build_result(res, ctx.dependencies);
+                    let build_record_diff = recipe_info
+                        .set_new_build_result(res, ctx.dependencies.into_inner().unwrap());
 
                     for dep in &build_record_diff.removed_deps {
                         // Don't keep circular dependencies
