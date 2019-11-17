@@ -1,4 +1,4 @@
-use super::iface::Context;
+use super::iface::{Context, ContextInner};
 use super::maybe_serialize::{AnySerialize, AnySerializeProxy, MaybeSerialize};
 use super::refs::*;
 use super::Result;
@@ -60,8 +60,7 @@ impl Clone for RecipeMeta {
 
 #[async_trait]
 pub trait RecipeRunner: Send + Sync {
-    //async fn run(&self, ctx: &mut Context) -> Result<Arc<dyn Any + Send + Sync>>;
-    async fn run(&self, ctx: Context) -> (Context, Result<Arc<dyn Any + Send + Sync>>);
+    async fn run(&self, ctx: Context) -> Result<Arc<dyn Any + Send + Sync>>;
 }
 
 pub(crate) struct RecipeInfo {
@@ -271,36 +270,36 @@ impl AssetReg {
         };
 
         if rebuild_pending {
-            let ctx = Context {
+            let ctx = Context::new(ContextInner {
                 opaque_ref: opaque_ref.clone(),
                 dependencies: Mutex::new(HashSet::new()),
-                dependency_build_time: Mutex::new(Default::default()),
-            };
+                //dependency_build_time: Mutex::new(Default::default()),
+            });
 
             /*println!(
                 "Running {}",
                 opaque_ref.recipe_info.read().unwrap().recipe_meta.op_name
             );*/
 
-            let (ctx, res_or_err, should_cache) = {
+            let (res_or_err, should_cache) = {
                 if let Some(cached) = { self.get_cached_build_result(&opaque_ref) } {
-                    (ctx, Ok(cached), false)
+                    (Ok(cached), false)
                 } else {
-                    let t0 = std::time::Instant::now();
-                    let (ctx, res) = recipe_runner.run(ctx).await;
-                    let build_duration = t0.elapsed() - *ctx.dependency_build_time.lock().unwrap();
+                    //let t0 = std::time::Instant::now();
+                    let res = recipe_runner.run(ctx.clone()).await;
+                    //let build_duration = t0.elapsed() - *ctx.dependency_build_time.lock().unwrap();
 
-                    let should_cache = build_duration > std::time::Duration::from_millis(100);
-                    if should_cache {
-                        let recipe_info = &opaque_ref.recipe_info;
-                        let recipe_info = recipe_info.read().unwrap();
-                        println!(
-                            "{} took {:?}",
-                            recipe_info.recipe_meta.op_name, build_duration
-                        );
-                    }
+                    let should_cache = false; //build_duration > std::time::Duration::from_millis(100);
+                                              /*if should_cache {
+                                                  let recipe_info = &opaque_ref.recipe_info;
+                                                  let recipe_info = recipe_info.read().unwrap();
+                                                  println!(
+                                                      "{} took {:?}",
+                                                      recipe_info.recipe_meta.op_name, build_duration
+                                                  );
+                                              }*/
 
-                    (ctx, res, should_cache)
+                    (res, should_cache)
                 }
             };
 
@@ -312,6 +311,10 @@ impl AssetReg {
                     if should_cache {
                         self.cache_build_result(&opaque_ref.addr, &*res, &recipe_info);
                     }
+
+                    let ctx = Arc::try_unwrap(ctx)
+                        .ok()
+                        .expect("Could not unwrap Context. Reference retained by user.");
 
                     recipe_info.rebuild_pending = false;
                     let build_record_diff = recipe_info

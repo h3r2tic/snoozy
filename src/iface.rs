@@ -11,11 +11,13 @@ use std::hash::{Hash, Hasher};
 use std::pin::Pin;
 use std::sync::{atomic::AtomicBool, Arc, Mutex, RwLock, Weak};
 
-pub struct Context {
+pub struct ContextInner {
     pub(crate) opaque_ref: OpaqueSnoozyRef, // Handle for the asset that this Context was created for
     pub(crate) dependencies: Mutex<HashSet<OpaqueSnoozyRef>>,
-    pub(crate) dependency_build_time: Mutex<std::time::Duration>,
+    //pub(crate) dependency_build_time: Mutex<std::time::Duration>,
 }
+
+pub type Context = Arc<ContextInner>;
 
 fn get_pinned_result<T>(p: Arc<dyn Any + Send + Sync>) -> Pin<Arc<T>>
 where
@@ -25,7 +27,7 @@ where
     unsafe { Pin::new_unchecked(p) }
 }
 
-impl Context {
+impl ContextInner {
     pub fn get_invalidation_trigger(&self) -> impl Fn() {
         let queued_assets = ASSET_REG.queued_asset_invalidations.clone();
         let opaque_ref = self.opaque_ref.clone();
@@ -43,9 +45,9 @@ impl Context {
 
         self.dependencies.lock().unwrap().insert(opaque_ref.clone());
 
-        let t0 = std::time::Instant::now();
+        //let t0 = std::time::Instant::now();
         ASSET_REG.evaluate_recipe(&opaque_ref).await;
-        *self.dependency_build_time.lock().unwrap() += t0.elapsed();
+        //*self.dependency_build_time.lock().unwrap() += t0.elapsed();
 
         let recipe_info = &opaque_ref.recipe_info;
         let recipe_info = recipe_info.read().unwrap();
@@ -69,7 +71,7 @@ pub trait Op: Send + Sync + 'static {
     fn run<'a>(
         &'a self,
         ctx: Context,
-    ) -> Pin<Box<dyn futures::Future<Output = (Context, Result<Self::Res>)> + Send + 'a>>;
+    ) -> Pin<Box<dyn futures::Future<Output = Result<Self::Res>> + Send + 'a>>;
     fn name() -> &'static str;
 }
 
@@ -79,12 +81,9 @@ where
     T: Op,
     T::Res: 'static + Send + Sync + Any,
 {
-    async fn run(&self, ctx: Context) -> (Context, Result<Arc<dyn Any + Send + Sync>>) {
-        let (ctx, build_result): (Context, Result<T::Res>) = Op::run(self, ctx).await;
-        (
-            ctx,
-            build_result.map(|r| -> Arc<dyn Any + Send + Sync> { Arc::new(r) }),
-        )
+    async fn run(&self, ctx: Context) -> Result<Arc<dyn Any + Send + Sync>> {
+        let build_result: T::Res = Op::run(self, ctx).await?;
+        Ok(Arc::new(build_result))
     }
 }
 
