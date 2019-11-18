@@ -27,7 +27,7 @@ impl RecipeBuildRecord {
 }
 
 pub(crate) struct RecipeMeta {
-    op_name: &'static str,
+    pub(crate) op_name: &'static str,
     result_type_name: &'static str,
     serialize_proxy: Box<dyn AnySerialize>,
 }
@@ -146,6 +146,7 @@ pub(crate) struct AssetReg {
 impl AssetReg {
     pub fn propagate_invalidations(&self) {
         let mut queued = self.queued_asset_invalidations.lock().unwrap();
+
         for opaque_ref in queued.iter() {
             self.invalidate_asset_tree(opaque_ref);
         }
@@ -245,19 +246,22 @@ impl AssetReg {
         result.map(Arc::from)
     }
 
-    pub async fn evaluate_recipe(&self, opaque_ref: &OpaqueSnoozyRef) {
+    pub async fn evaluate_recipe(
+        &self,
+        opaque_ref: &OpaqueSnoozyRef,
+        evaluation_path: HashSet<usize>,
+    ) {
         /*println!(
             "evaluate_recipe({})",
             opaque_ref.recipe_info.read().unwrap().recipe_meta.op_name
         );*/
 
-        if opaque_ref
-            .being_evaluated
-            .swap(true, atomic::Ordering::Relaxed)
-        {
-            //println!("recipe already being evaluated");
+        if evaluation_path.contains(&opaque_ref.to_evaluation_path_node()) {
+            // println!("Recipe already being evaluated");
             return;
         }
+
+        let eval_lock = opaque_ref.being_evaluated.lock().await;
 
         let (rebuild_pending, recipe_runner) = {
             let recipe_info = &opaque_ref.recipe_info;
@@ -270,9 +274,13 @@ impl AssetReg {
         };
 
         if rebuild_pending {
+            let mut evaluation_path = evaluation_path;
+            evaluation_path.insert(opaque_ref.to_evaluation_path_node());
+
             let ctx = Context::new(ContextInner {
                 opaque_ref: opaque_ref.clone(),
                 dependencies: Mutex::new(HashSet::new()),
+                evaluation_path: Mutex::new(evaluation_path),
                 //dependency_build_time: Mutex::new(Default::default()),
             });
 
@@ -322,7 +330,12 @@ impl AssetReg {
 
                     for dep in &build_record_diff.removed_deps {
                         // Don't keep circular dependencies
-                        if dep.being_evaluated.load(atomic::Ordering::Relaxed) {
+                        if ctx
+                            .evaluation_path
+                            .lock()
+                            .unwrap()
+                            .contains(&dep.to_evaluation_path_node())
+                        {
                             continue;
                         }
 
@@ -340,7 +353,12 @@ impl AssetReg {
 
                     for dep in &build_record_diff.added_deps {
                         // Don't keep circular dependencies
-                        if dep.being_evaluated.load(atomic::Ordering::Relaxed) {
+                        if ctx
+                            .evaluation_path
+                            .lock()
+                            .unwrap()
+                            .contains(&dep.to_evaluation_path_node())
+                        {
                             continue;
                         }
 
@@ -370,13 +388,15 @@ impl AssetReg {
                     recipe_info.rebuild_pending = false;
 
                     //println!("Error building asset {:?}: {}", opaque_ref, err);
-                    println!("Error building asset: {}", err);
+
+                    println!(
+                        "Error running op {}: {}",
+                        recipe_info.recipe_meta.op_name, err
+                    );
                 }
             }
         }
 
-        opaque_ref
-            .being_evaluated
-            .store(false, atomic::Ordering::Relaxed);
+        drop(eval_lock);
     }
 }

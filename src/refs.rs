@@ -1,6 +1,7 @@
 use futures::executor::block_on;
 use serde::{ser::SerializeTuple, Serialize, Serializer};
 use std::any::TypeId;
+use std::collections::HashSet;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
@@ -40,7 +41,7 @@ impl Serialize for OpaqueSnoozyAddr {
 pub struct OpaqueSnoozyRefInner {
     pub(crate) addr: OpaqueSnoozyAddr,
     pub(crate) recipe_info: RwLock<crate::asset_reg::RecipeInfo>,
-    pub(crate) being_evaluated: AtomicBool,
+    pub(crate) being_evaluated: futures::lock::Mutex<()>,
 }
 
 impl OpaqueSnoozyRefInner {
@@ -48,8 +49,12 @@ impl OpaqueSnoozyRefInner {
         Self {
             addr: self.addr.clone(),
             recipe_info: RwLock::new(self.recipe_info.read().unwrap().clone_desc()),
-            being_evaluated: AtomicBool::new(false),
+            being_evaluated: Default::default(),
         }
+    }
+
+    pub fn to_evaluation_path_node(&self) -> usize {
+        self as *const Self as usize
     }
 }
 
@@ -135,11 +140,12 @@ impl<Res> SnoozyRef<Res> {
         );
 
         // Evaluate the recipe in case it's used recursively in its own definition
-        block_on(crate::asset_reg::ASSET_REG.evaluate_recipe(&self.opaque));
+        block_on(crate::asset_reg::ASSET_REG.evaluate_recipe(&self.opaque, HashSet::new()));
 
         let hash_difference = {
             let entry = self.opaque.recipe_info.read().unwrap();
             let other_entry = other.opaque.recipe_info.read().unwrap();
+            //dbg!((entry.recipe_hash, other_entry.recipe_hash));
             entry.recipe_hash != other_entry.recipe_hash
         };
 

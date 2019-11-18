@@ -14,6 +14,7 @@ use std::sync::{atomic::AtomicBool, Arc, Mutex, RwLock, Weak};
 pub struct ContextInner {
     pub(crate) opaque_ref: OpaqueSnoozyRef, // Handle for the asset that this Context was created for
     pub(crate) dependencies: Mutex<HashSet<OpaqueSnoozyRef>>,
+    pub(crate) evaluation_path: Mutex<HashSet<usize>>,
     //pub(crate) dependency_build_time: Mutex<std::time::Duration>,
 }
 
@@ -46,7 +47,10 @@ impl ContextInner {
         self.dependencies.lock().unwrap().insert(opaque_ref.clone());
 
         //let t0 = std::time::Instant::now();
-        ASSET_REG.evaluate_recipe(&opaque_ref).await;
+        let child_eval_path = self.evaluation_path.lock().unwrap().clone();
+        ASSET_REG
+            .evaluate_recipe(&opaque_ref, child_eval_path)
+            .await;
         //*self.dependency_build_time.lock().unwrap() += t0.elapsed();
 
         let recipe_info = &opaque_ref.recipe_info;
@@ -58,8 +62,9 @@ impl ContextInner {
                 ..
             }) => Ok(get_pinned_result(last_valid_build_result.clone())),
             _ => Err(format_err!(
-                "Requested asset {:?} failed to build",
-                *opaque_ref
+                "Requested asset {:?} failed to build ({})",
+                *opaque_ref,
+                recipe_info.recipe_meta.op_name,
             )),
         }
     }
@@ -83,7 +88,8 @@ where
 {
     async fn run(&self, ctx: Context) -> Result<Arc<dyn Any + Send + Sync>> {
         let build_result: T::Res = Op::run(self, ctx).await?;
-        Ok(Arc::new(build_result))
+        let build_result: Arc<dyn Any + Send + Sync> = Arc::new(build_result);
+        Ok(build_result)
     }
 }
 
@@ -124,7 +130,7 @@ fn def_binding<
             let opaque_ref = Arc::new(OpaqueSnoozyRefInner {
                 addr: opaque_addr.clone(),
                 recipe_info,
-                being_evaluated: AtomicBool::new(false),
+                being_evaluated: Default::default(),
             });
 
             refs.insert(opaque_addr, Arc::downgrade(&opaque_ref));
@@ -148,7 +154,7 @@ impl Snapshot {
     ) -> Pin<Arc<Res>> {
         let opaque_ref: OpaqueSnoozyRef = asset_ref.into();
 
-        ASSET_REG.evaluate_recipe(&opaque_ref).await;
+        ASSET_REG.evaluate_recipe(&opaque_ref, HashSet::new()).await;
 
         let recipe_info = &opaque_ref.recipe_info;
         let recipe_info = recipe_info.read().unwrap();
