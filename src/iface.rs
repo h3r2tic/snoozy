@@ -113,6 +113,7 @@ fn def_binding<
     let recipe_hash = s.finish();
 
     let mut refs = ASSET_REG.refs.write().unwrap();
+    //dbg!(refs.len());
 
     let opaque_addr = OpaqueSnoozyAddr::new::<AssetType>(identity_hash);
 
@@ -174,10 +175,12 @@ where
     F: FnOnce(Snapshot) -> Ret,
 {
     ASSET_REG.propagate_invalidations();
+    ASSET_REG.collect_garbage();
     callback(Snapshot)
 }
 
 pub fn get_snapshot() -> Snapshot {
     ASSET_REG.propagate_invalidations();
+    ASSET_REG.collect_garbage();
     Snapshot
 }

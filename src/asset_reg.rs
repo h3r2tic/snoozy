@@ -154,6 +154,13 @@ impl AssetReg {
         queued.clear();
     }
 
+    pub fn collect_garbage(&self) {
+        self.refs
+            .write()
+            .unwrap()
+            .retain(|k, v| v.strong_count() > 0);
+    }
+
     fn invalidate_asset_tree(&self, opaque_ref: &OpaqueSnoozyRef) {
         let recipe_info = &opaque_ref.recipe_info;
 
