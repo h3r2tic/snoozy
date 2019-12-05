@@ -7,7 +7,7 @@ use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{Read, Write};
-use std::sync::{atomic, Arc, Mutex, RwLock, Weak};
+use std::sync::{Arc, Mutex, RwLock, Weak};
 
 pub struct RecipeBuildRecord {
     pub last_valid_build_result: Arc<dyn Any + Send + Sync>,
@@ -158,7 +158,7 @@ impl AssetReg {
         self.refs
             .write()
             .unwrap()
-            .retain(|k, v| v.strong_count() > 0);
+            .retain(|_k, v| v.strong_count() > 0);
     }
 
     fn invalidate_asset_tree(&self, opaque_ref: &OpaqueSnoozyRef) {

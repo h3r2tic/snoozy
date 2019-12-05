@@ -9,7 +9,7 @@ use std::any::Any;
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::pin::Pin;
-use std::sync::{atomic::AtomicBool, Arc, Mutex, RwLock, Weak};
+use std::sync::{Arc, Mutex, RwLock, Weak};
 
 pub struct ContextInner {
     pub(crate) opaque_ref: OpaqueSnoozyRef, // Handle for the asset that this Context was created for

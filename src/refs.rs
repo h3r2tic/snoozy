@@ -6,7 +6,7 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::mem::transmute;
-use std::sync::{atomic::AtomicBool, Arc, RwLock, Weak};
+use std::sync::{Arc, RwLock, Weak};
 
 #[derive(Hash, Clone, Copy, Eq, PartialEq, Debug, Serialize)]
 pub struct SnoozyIdentityHash(pub(crate) u64);
