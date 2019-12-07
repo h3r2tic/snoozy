@@ -9,8 +9,18 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 
+#[derive(Default)]
+pub struct RecipeDebugInfo {
+    pub debug_name: Option<String>,
+}
+
+pub struct RecipeBuildResult {
+    pub artifact: Arc<dyn Any + Send + Sync>,
+    pub debug_info: RecipeDebugInfo,
+}
+
 pub struct RecipeBuildRecord {
-    pub last_valid_build_result: Arc<dyn Any + Send + Sync>,
+    pub last_valid_build_result: RecipeBuildResult,
     // Assets this one requested during the last build
     pub dependencies: HashSet<OpaqueSnoozyRef>,
     // Assets that requested this asset during their builds
@@ -26,8 +36,8 @@ impl RecipeBuildRecord {
     }
 }
 
-pub(crate) struct RecipeMeta {
-    pub(crate) op_name: &'static str,
+pub struct RecipeMeta {
+    pub op_name: &'static str,
     result_type_name: &'static str,
     serialize_proxy: Box<dyn AnySerialize>,
 }
@@ -63,7 +73,7 @@ pub trait RecipeRunner: Send + Sync {
     async fn run(&self, ctx: Context) -> Result<Arc<dyn Any + Send + Sync>>;
 }
 
-pub(crate) struct RecipeInfo {
+pub struct RecipeInfo {
     pub recipe_runner: Arc<dyn RecipeRunner>,
     pub recipe_meta: RecipeMeta,
     pub recipe_hash: u64,
@@ -89,7 +99,7 @@ impl RecipeInfo {
 
     fn set_new_build_result(
         &mut self,
-        build_result: Arc<dyn Any + Send + Sync>,
+        build_result: RecipeBuildResult,
         dependencies: HashSet<OpaqueSnoozyRef>,
     ) -> BuildRecordDiff {
         let (prev_deps, prev_rev_deps) = self
@@ -288,6 +298,7 @@ impl AssetReg {
                 opaque_ref: opaque_ref.clone(),
                 dependencies: Mutex::new(HashSet::new()),
                 evaluation_path: Mutex::new(evaluation_path),
+                debug_info: Mutex::new(RecipeDebugInfo::default()),
                 //dependency_build_time: Mutex::new(Default::default()),
             });
 
@@ -330,6 +341,11 @@ impl AssetReg {
                     let ctx = Arc::try_unwrap(ctx)
                         .ok()
                         .expect("Could not unwrap Context. Reference retained by user.");
+
+                    let res = RecipeBuildResult {
+                        artifact: res,
+                        debug_info: ctx.debug_info.into_inner().unwrap(),
+                    };
 
                     recipe_info.rebuild_pending = false;
                     let build_record_diff = recipe_info

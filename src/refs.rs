@@ -40,7 +40,7 @@ impl Serialize for OpaqueSnoozyAddr {
 
 pub struct OpaqueSnoozyRefInner {
     pub(crate) addr: OpaqueSnoozyAddr,
-    pub(crate) recipe_info: RwLock<crate::asset_reg::RecipeInfo>,
+    pub recipe_info: RwLock<crate::asset_reg::RecipeInfo>,
     pub(crate) being_evaluated: futures::lock::Mutex<()>,
 }
 
@@ -79,6 +79,13 @@ impl Serialize for OpaqueSnoozyRefInner {
 
 #[derive(Clone, Serialize)]
 pub struct OpaqueSnoozyRef(pub Arc<OpaqueSnoozyRefInner>);
+
+impl OpaqueSnoozyRef {
+    pub fn get_transient_op_id(&self) -> usize {
+        let inner: &OpaqueSnoozyRefInner = &**self;
+        inner as *const OpaqueSnoozyRefInner as usize
+    }
+}
 
 impl std::ops::Deref for OpaqueSnoozyRef {
     type Target = Arc<OpaqueSnoozyRefInner>;

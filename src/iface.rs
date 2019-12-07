@@ -1,4 +1,6 @@
-use super::asset_reg::{RecipeBuildRecord, RecipeInfo, RecipeMeta, RecipeRunner, ASSET_REG};
+use super::asset_reg::{
+    RecipeBuildRecord, RecipeDebugInfo, RecipeInfo, RecipeMeta, RecipeRunner, ASSET_REG,
+};
 use super::maybe_serialize::MaybeSerialize;
 use super::refs::{
     OpaqueSnoozyAddr, OpaqueSnoozyRef, OpaqueSnoozyRefInner, SnoozyIdentityHash, SnoozyRef,
@@ -15,7 +17,14 @@ pub struct ContextInner {
     pub(crate) opaque_ref: OpaqueSnoozyRef, // Handle for the asset that this Context was created for
     pub(crate) dependencies: Mutex<HashSet<OpaqueSnoozyRef>>,
     pub(crate) evaluation_path: Mutex<HashSet<usize>>,
+    pub(crate) debug_info: Mutex<RecipeDebugInfo>,
     //pub(crate) dependency_build_time: Mutex<std::time::Duration>,
+}
+
+impl ContextInner {
+    pub fn set_debug_name(&self, name: impl AsRef<str>) {
+        self.debug_info.lock().unwrap().debug_name = Some(name.as_ref().to_owned());
+    }
 }
 
 pub type Context = Arc<ContextInner>;
@@ -60,13 +69,17 @@ impl ContextInner {
             Some(RecipeBuildRecord {
                 ref last_valid_build_result,
                 ..
-            }) => Ok(get_pinned_result(last_valid_build_result.clone())),
+            }) => Ok(get_pinned_result(last_valid_build_result.artifact.clone())),
             _ => Err(format_err!(
                 "Requested asset {:?} failed to build ({})",
                 *opaque_ref,
                 recipe_info.recipe_meta.op_name,
             )),
         }
+    }
+
+    pub fn get_transient_op_id(&self) -> usize {
+        self.opaque_ref.get_transient_op_id()
     }
 }
 
@@ -164,7 +177,7 @@ impl Snapshot {
             Some(RecipeBuildRecord {
                 ref last_valid_build_result,
                 ..
-            }) => get_pinned_result(last_valid_build_result.clone()),
+            }) => get_pinned_result(last_valid_build_result.artifact.clone()),
             None => panic!("Requested asset {:?} failed to build", *opaque_ref),
         }
     }
