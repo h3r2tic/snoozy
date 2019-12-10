@@ -18,7 +18,6 @@ pub struct ContextInner {
     pub(crate) dependencies: Mutex<HashSet<OpaqueSnoozyRef>>,
     pub(crate) evaluation_path: Mutex<HashSet<usize>>,
     pub(crate) debug_info: Mutex<RecipeDebugInfo>,
-    //pub(crate) dependency_build_time: Mutex<std::time::Duration>,
 }
 
 impl ContextInner {
@@ -47,12 +46,10 @@ impl ContextInner {
 
         self.dependencies.lock().unwrap().insert(opaque_ref.clone());
 
-        //let t0 = std::time::Instant::now();
         let child_eval_path = self.evaluation_path.lock().unwrap().clone();
         ASSET_REG
             .evaluate_recipe(&opaque_ref, child_eval_path)
             .await;
-        //*self.dependency_build_time.lock().unwrap() += t0.elapsed();
 
         let recipe_info = &opaque_ref.recipe_info;
         let recipe_info = recipe_info.read().unwrap();
@@ -83,6 +80,7 @@ pub trait Op: Send + Sync + 'static {
         ctx: Context,
     ) -> Pin<Box<dyn futures::Future<Output = Result<Self::Res>> + Send + 'a>>;
     fn name() -> &'static str;
+    fn should_cache_result(&self) -> bool;
 }
 
 #[async_trait]
@@ -95,6 +93,10 @@ where
         let build_result: T::Res = Op::run(self, ctx).await?;
         let build_result: Arc<dyn Any + Send + Sync> = Arc::new(build_result);
         Ok(build_result)
+    }
+
+    fn should_cache_result(&self) -> bool {
+        Op::should_cache_result(self)
     }
 }
 

@@ -205,7 +205,7 @@ impl<Res> fmt::Debug for SnoozyRef<Res> {
         write!(
             f,
             "SnoozyRef<{}> {{identity_hash: {}}}",
-            unsafe { std::intrinsics::type_name::<Res>() },
+            std::any::type_name::<Res>(),
             self.opaque.identity_hash()
         )
     }

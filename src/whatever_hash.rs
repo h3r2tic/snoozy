@@ -62,7 +62,11 @@ declare_optional_hash!(
         encoded.hash(state);
         let elapsed = t0.elapsed();
         if elapsed > std::time::Duration::from_millis(100) {
-            println!("Serde-hash took {:?} :(", elapsed);
+            tracing::warn!(
+                "Serde-hash of {} took {:?} :(",
+                std::any::type_name::<T>(),
+                elapsed
+            );
         }
     }
 );

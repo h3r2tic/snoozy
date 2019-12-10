@@ -71,6 +71,7 @@ impl Clone for RecipeMeta {
 #[async_trait]
 pub trait RecipeRunner: Send + Sync {
     async fn run(&self, ctx: Context) -> Result<Arc<dyn Any + Send + Sync>>;
+    fn should_cache_result(&self) -> bool;
 }
 
 pub struct RecipeInfo {
@@ -200,11 +201,14 @@ impl AssetReg {
         let serialize_proxy = &*recipe_info.recipe_meta.serialize_proxy as &dyn AnySerialize;
 
         if !serialize_proxy.does_support_serialization() {
-            return;
+            panic!(
+                "{} was marked with snoozy(cache), but does not support serialization",
+                recipe_info.recipe_meta.result_type_name
+            );
         }
 
-        println!(
-            "The result ({}) supports serialization, and we'll cache it.",
+        tracing::info!(
+            "Caching {} on disk.",
             recipe_info.recipe_meta.result_type_name
         );
 
@@ -215,7 +219,7 @@ impl AssetReg {
         let mut data: Vec<u8> = Vec::new();
         serialize_proxy.try_serialize(asset, &mut data);
 
-        println!(
+        tracing::info!(
             "Serialized into {} in {:?}",
             pretty_bytes::converter::convert(data.len() as f64),
             t0.elapsed()
@@ -251,7 +255,11 @@ impl AssetReg {
 
             if f.read_to_end(&mut buffer).is_ok() {
                 let result = serialize_proxy.try_deserialize(&mut buffer);
-                println!("Deserialized in {:?}", t0.elapsed());
+                tracing::info!(
+                    "{} deserialized in {:?}",
+                    recipe_info.recipe_meta.op_name,
+                    t0.elapsed()
+                );
                 result
             } else {
                 None
@@ -311,21 +319,8 @@ impl AssetReg {
                 if let Some(cached) = { self.get_cached_build_result(&opaque_ref) } {
                     (Ok(cached), false)
                 } else {
-                    //let t0 = std::time::Instant::now();
                     let res = recipe_runner.run(ctx.clone()).await;
-                    //let build_duration = t0.elapsed() - *ctx.dependency_build_time.lock().unwrap();
-
-                    let should_cache = false; //build_duration > std::time::Duration::from_millis(100);
-                                              /*if should_cache {
-                                                  let recipe_info = &opaque_ref.recipe_info;
-                                                  let recipe_info = recipe_info.read().unwrap();
-                                                  println!(
-                                                      "{} took {:?}",
-                                                      recipe_info.recipe_meta.op_name, build_duration
-                                                  );
-                                              }*/
-
-                    (res, should_cache)
+                    (res, recipe_runner.should_cache_result())
                 }
             };
 
