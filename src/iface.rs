@@ -29,14 +29,6 @@ impl ContextInner {
 
 pub type Context = Arc<ContextInner>;
 
-fn get_pinned_result<T>(p: Arc<dyn Any + Send + Sync>) -> Pin<Arc<T>>
-where
-    T: Any + Send + Sync + 'static,
-{
-    let p: Arc<T> = p.downcast::<T>().unwrap();
-    unsafe { Pin::new_unchecked(p) }
-}
-
 impl ContextInner {
     pub fn get_invalidation_trigger(&self) -> impl Fn() {
         let queued_assets = ASSET_REG.queued_asset_invalidations.clone();
@@ -49,7 +41,7 @@ impl ContextInner {
     pub async fn get<Res: 'static + Send + Sync, SnoozyT: Into<SnoozyRef<Res>>>(
         &self,
         asset_ref: SnoozyT,
-    ) -> Result<Pin<Arc<Res>>> {
+    ) -> Result<Arc<Res>> {
         let asset_ref = asset_ref.into();
         let opaque_ref: OpaqueSnoozyRef = asset_ref.opaque;
 
@@ -69,7 +61,7 @@ impl ContextInner {
             Some(RecipeBuildRecord {
                 ref last_valid_build_result,
                 ..
-            }) => Ok(get_pinned_result(last_valid_build_result.artifact.clone())),
+            }) => Ok(last_valid_build_result.artifact.clone().downcast().unwrap()),
             _ => Err(format_err!(
                 "Requested asset {:?} failed to build ({})",
                 *opaque_ref,
@@ -162,10 +154,7 @@ fn def_binding<
 
 pub struct Snapshot;
 impl Snapshot {
-    pub async fn get<Res: 'static + Send + Sync>(
-        &self,
-        asset_ref: SnoozyRef<Res>,
-    ) -> Pin<Arc<Res>> {
+    pub async fn get<Res: 'static + Send + Sync>(&self, asset_ref: SnoozyRef<Res>) -> Arc<Res> {
         let opaque_ref: OpaqueSnoozyRef = asset_ref.into();
 
         ASSET_REG.evaluate_recipe(&opaque_ref, HashSet::new()).await;
@@ -177,7 +166,7 @@ impl Snapshot {
             Some(RecipeBuildRecord {
                 ref last_valid_build_result,
                 ..
-            }) => get_pinned_result(last_valid_build_result.artifact.clone()),
+            }) => last_valid_build_result.artifact.clone().downcast().unwrap(),
             None => panic!("Requested asset {:?} failed to build", *opaque_ref),
         }
     }
