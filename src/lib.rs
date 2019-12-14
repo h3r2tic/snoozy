@@ -4,6 +4,7 @@
 #![feature(weak_counts)]
 
 mod asset_reg;
+mod cycle_detector;
 mod iface;
 mod maybe_serialize;
 mod refs;

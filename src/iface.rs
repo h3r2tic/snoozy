@@ -1,11 +1,13 @@
-use super::asset_reg::{
+use crate::asset_reg::{
     RecipeBuildRecord, RecipeDebugInfo, RecipeInfo, RecipeMeta, RecipeRunner, ASSET_REG,
 };
-use super::maybe_serialize::MaybeSerialize;
-use super::refs::{
-    OpaqueSnoozyAddr, OpaqueSnoozyRef, OpaqueSnoozyRefInner, SnoozyIdentityHash, SnoozyRef,
+use crate::cycle_detector::{create_cycle_detector, CycleDetector};
+use crate::maybe_serialize::MaybeSerialize;
+use crate::refs::{
+    EvaluationPathNode, OpaqueSnoozyAddr, OpaqueSnoozyRef, OpaqueSnoozyRefInner,
+    SnoozyIdentityHash, SnoozyRef,
 };
-use super::{DefaultSnoozyHash, Result};
+use crate::{DefaultSnoozyHash, Result};
 use async_trait::async_trait;
 use std::any::Any;
 use std::collections::HashSet;
@@ -13,42 +15,58 @@ use std::hash::{Hash, Hasher};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, RwLock, Weak};
 
+#[derive(Clone)]
+pub struct EvalContext {
+    pub cycle_detector: CycleDetector,
+}
+
 pub struct ContextInner {
     pub(crate) opaque_ref: OpaqueSnoozyRef, // Handle for the asset that this Context was created for
     pub(crate) dependencies: Mutex<HashSet<OpaqueSnoozyRef>>,
-    pub(crate) evaluation_path: Mutex<HashSet<usize>>,
+    pub(crate) evaluation_path: Mutex<HashSet<EvaluationPathNode>>,
     pub(crate) debug_info: Mutex<RecipeDebugInfo>,
 }
 
-impl ContextInner {
-    pub fn set_debug_name(&self, name: impl AsRef<str>) {
-        self.debug_info.lock().unwrap().debug_name = Some(name.as_ref().to_owned());
-    }
+#[derive(Clone)]
+pub struct Context {
+    pub inner: Arc<ContextInner>,
+    pub eval_context: EvalContext,
 }
 
-pub type Context = Arc<ContextInner>;
+impl Context {
+    pub fn set_debug_name(&self, name: impl AsRef<str>) {
+        self.inner.debug_info.lock().unwrap().debug_name = Some(name.as_ref().to_owned());
+    }
 
-impl ContextInner {
     pub fn get_invalidation_trigger(&self) -> impl Fn() {
         let queued_assets = ASSET_REG.queued_asset_invalidations.clone();
-        let opaque_ref = self.opaque_ref.clone();
+        let opaque_ref = self.inner.opaque_ref.clone();
         move || {
             queued_assets.lock().unwrap().push(opaque_ref.clone());
         }
     }
 
     pub async fn get<Res: 'static + Send + Sync, SnoozyT: Into<SnoozyRef<Res>>>(
-        &self,
+        &mut self,
         asset_ref: SnoozyT,
     ) -> Result<Arc<Res>> {
+        let inner = &self.inner;
         let asset_ref = asset_ref.into();
         let opaque_ref: OpaqueSnoozyRef = asset_ref.opaque;
 
-        self.dependencies.lock().unwrap().insert(opaque_ref.clone());
+        self.eval_context.cycle_detector.add_edge(
+            inner.opaque_ref.to_evaluation_path_node().into_raw(),
+            opaque_ref.to_evaluation_path_node().into_raw(),
+        );
+        inner
+            .dependencies
+            .lock()
+            .unwrap()
+            .insert(opaque_ref.clone());
 
-        let child_eval_path = self.evaluation_path.lock().unwrap().clone();
+        let child_eval_path = inner.evaluation_path.lock().unwrap().clone();
         ASSET_REG
-            .evaluate_recipe(&opaque_ref, child_eval_path)
+            .evaluate_recipe(&opaque_ref, child_eval_path, self.eval_context.clone())
             .await;
 
         let recipe_info = &opaque_ref.recipe_info;
@@ -68,7 +86,7 @@ impl ContextInner {
     }
 
     pub fn get_transient_op_id(&self) -> usize {
-        self.opaque_ref.get_transient_op_id()
+        self.inner.opaque_ref.get_transient_op_id()
     }
 }
 
@@ -159,7 +177,16 @@ impl Snapshot {
     pub async fn get<Res: 'static + Send + Sync>(&self, asset_ref: SnoozyRef<Res>) -> Arc<Res> {
         let opaque_ref: OpaqueSnoozyRef = asset_ref.into();
 
-        ASSET_REG.evaluate_recipe(&opaque_ref, HashSet::new()).await;
+        let (cycle_detector, cycle_detector_backend) = create_cycle_detector();
+        let eval_context = EvalContext { cycle_detector };
+
+        std::thread::spawn(move || {
+            cycle_detector_backend.run();
+        });
+
+        ASSET_REG
+            .evaluate_recipe(&opaque_ref, HashSet::new(), eval_context)
+            .await;
 
         let recipe_info = &opaque_ref.recipe_info;
         let recipe_info = recipe_info.read().unwrap();

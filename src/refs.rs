@@ -1,3 +1,5 @@
+use crate::cycle_detector::create_cycle_detector;
+use crate::iface::EvalContext;
 use futures::executor::block_on;
 use serde::{ser::SerializeTuple, Serialize, Serializer};
 use std::any::TypeId;
@@ -44,6 +46,15 @@ pub struct OpaqueSnoozyRefInner {
     pub(crate) being_evaluated: futures::lock::Mutex<()>,
 }
 
+#[derive(Copy, Clone, Hash, PartialEq, Eq, Debug)]
+pub struct EvaluationPathNode(usize);
+
+impl EvaluationPathNode {
+    pub fn into_raw(self) -> usize {
+        self.0
+    }
+}
+
 impl OpaqueSnoozyRefInner {
     fn clone_desc(&self) -> Self {
         Self {
@@ -53,8 +64,8 @@ impl OpaqueSnoozyRefInner {
         }
     }
 
-    pub fn to_evaluation_path_node(&self) -> usize {
-        self as *const Self as usize
+    pub fn to_evaluation_path_node(&self) -> EvaluationPathNode {
+        EvaluationPathNode(self as *const Self as usize)
     }
 }
 
@@ -146,8 +157,20 @@ impl<Res> SnoozyRef<Res> {
             "rebind() can only be used on isolated refs. Use isolate() first."
         );
 
+        let (cycle_detector, cycle_detector_backend) = create_cycle_detector();
+        let eval_context = EvalContext { cycle_detector };
+
+        std::thread::spawn(move || {
+            cycle_detector_backend.run();
+        });
+
+        // TODO: figre out how not to do it here.
         // Evaluate the recipe in case it's used recursively in its own definition
-        block_on(crate::asset_reg::ASSET_REG.evaluate_recipe(&self.opaque, HashSet::new()));
+        block_on(crate::asset_reg::ASSET_REG.evaluate_recipe(
+            &self.opaque,
+            HashSet::new(),
+            eval_context,
+        ));
 
         let hash_difference = {
             let entry = self.opaque.recipe_info.read().unwrap();

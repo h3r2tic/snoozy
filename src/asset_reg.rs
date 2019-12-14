@@ -1,4 +1,4 @@
-use super::iface::{Context, ContextInner};
+use super::iface::{Context, ContextInner, EvalContext};
 use super::maybe_serialize::{AnySerialize, AnySerializeProxy, MaybeSerialize};
 use super::refs::*;
 use super::Result;
@@ -178,7 +178,10 @@ impl AssetReg {
         let mut recipe_info = recipe_info.write().unwrap();
         recipe_info.rebuild_pending = true;
 
-        //dbg!(recipe_info.recipe_meta.op_name);
+        tracing::debug!(
+            "invalidate asset tree of {}",
+            recipe_info.recipe_meta.op_name
+        );
 
         if let Some(ref build_record) = recipe_info.build_record {
             for dep in build_record
@@ -274,19 +277,30 @@ impl AssetReg {
     pub async fn evaluate_recipe(
         &self,
         opaque_ref: &OpaqueSnoozyRef,
-        evaluation_path: HashSet<usize>,
+        evaluation_path: HashSet<EvaluationPathNode>,
+        eval_context: EvalContext,
     ) {
-        /*println!(
-            "evaluate_recipe({})",
-            opaque_ref.recipe_info.read().unwrap().recipe_meta.op_name
-        );*/
+        tracing::debug!(
+            "evaluate_recipe({}): {:?}",
+            opaque_ref.recipe_info.read().unwrap().recipe_meta.op_name,
+            opaque_ref.to_evaluation_path_node()
+        );
 
-        if evaluation_path.contains(&opaque_ref.to_evaluation_path_node()) {
-            // println!("Recipe already being evaluated");
+        let evaluation_path_node = opaque_ref.to_evaluation_path_node();
+        if evaluation_path.contains(&evaluation_path_node) {
+            tracing::debug!("Recipe already being evaluated");
             return;
         }
 
+        tracing::debug!(
+            "proceeding with eval. node: {:?}; path: {:?}",
+            evaluation_path_node,
+            evaluation_path
+        );
+
         let eval_lock = opaque_ref.being_evaluated.lock().await;
+
+        tracing::debug!("got the eval lock");
 
         let (rebuild_pending, recipe_runner) = {
             let recipe_info = &opaque_ref.recipe_info;
@@ -298,22 +312,26 @@ impl AssetReg {
             )
         };
 
+        tracing::debug!("got rebuild pending info");
+
         if rebuild_pending {
             let mut evaluation_path = evaluation_path;
             evaluation_path.insert(opaque_ref.to_evaluation_path_node());
 
-            let ctx = Context::new(ContextInner {
-                opaque_ref: opaque_ref.clone(),
-                dependencies: Mutex::new(HashSet::new()),
-                evaluation_path: Mutex::new(evaluation_path),
-                debug_info: Mutex::new(RecipeDebugInfo::default()),
-                //dependency_build_time: Mutex::new(Default::default()),
-            });
+            let ctx = Context {
+                inner: Arc::new(ContextInner {
+                    opaque_ref: opaque_ref.clone(),
+                    dependencies: Mutex::new(HashSet::new()),
+                    evaluation_path: Mutex::new(evaluation_path),
+                    debug_info: Mutex::new(RecipeDebugInfo::default()),
+                }),
+                eval_context: eval_context.clone(),
+            };
 
-            /*println!(
+            tracing::debug!(
                 "Running {}",
                 opaque_ref.recipe_info.read().unwrap().recipe_meta.op_name
-            );*/
+            );
 
             let (res_or_err, should_cache) = {
                 if let Some(cached) = { self.get_cached_build_result(&opaque_ref) } {
@@ -333,7 +351,7 @@ impl AssetReg {
                         self.cache_build_result(&opaque_ref.addr, &*res, &recipe_info);
                     }
 
-                    let ctx = Arc::try_unwrap(ctx)
+                    let ctx = Arc::try_unwrap(ctx.inner)
                         .ok()
                         .expect("Could not unwrap Context. Reference retained by user.");
 
