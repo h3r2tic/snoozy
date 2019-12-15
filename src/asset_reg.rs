@@ -6,32 +6,70 @@ use async_trait::async_trait;
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
+use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
-use std::sync::{Arc, Mutex, RwLock, Weak};
+use std::sync::{atomic, Arc, Mutex, RwLock, Weak};
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct RecipeDebugInfo {
     pub debug_name: Option<String>,
 }
 
+#[derive(Clone)]
 pub struct RecipeBuildResult {
     pub artifact: Arc<dyn Any + Send + Sync>,
     pub debug_info: RecipeDebugInfo,
 }
 
+#[derive(Clone)]
+pub struct SnoozyRefDependency(pub Arc<OpaqueSnoozyRefInner>);
+
+impl SnoozyRefDependency {
+    pub fn get_transient_op_id(&self) -> usize {
+        let inner: &OpaqueSnoozyRefInner = &*self.0;
+        inner as *const OpaqueSnoozyRefInner as usize
+    }
+}
+
+impl std::ops::Deref for SnoozyRefDependency {
+    type Target = Arc<OpaqueSnoozyRefInner>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Eq for SnoozyRefDependency {}
+impl PartialEq for SnoozyRefDependency {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::eq(
+            &*self.0 as *const OpaqueSnoozyRefInner,
+            &*other.0 as *const OpaqueSnoozyRefInner,
+        )
+    }
+}
+impl Hash for SnoozyRefDependency {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        let ptr = &*self.0 as *const OpaqueSnoozyRefInner as usize;
+        ptr.hash(state);
+    }
+}
+
 pub struct RecipeBuildRecord {
-    pub last_valid_build_result: RecipeBuildResult,
+    pub build_result: RecipeBuildResult,
+    pub prev_build_result: Option<RecipeBuildResult>,
+    pub build_snapshot_idx: usize,
     // Assets this one requested during the last build
-    pub dependencies: HashSet<OpaqueSnoozyRef>,
+    pub dependencies: HashSet<SnoozyRefDependency>,
     // Assets that requested this asset during their builds
-    pub reverse_dependencies: Vec<WeakOpaqueSnoozyRef>,
+    pub reverse_dependencies: Vec<Weak<OpaqueSnoozyRefInner>>,
 }
 
 impl RecipeBuildRecord {
-    fn get_valid_reverse_dependencies(&self) -> HashSet<OpaqueSnoozyRef> {
+    fn get_valid_reverse_dependencies(&self) -> HashSet<SnoozyRefDependency> {
         self.reverse_dependencies
             .iter()
-            .filter_map(|a| Some(OpaqueSnoozyRef(Weak::upgrade(a)?)))
+            .filter_map(|a| Some(SnoozyRefDependency(Weak::upgrade(a)?)))
             .collect()
     }
 }
@@ -79,20 +117,20 @@ pub struct RecipeInfo {
     pub recipe_meta: RecipeMeta,
     pub recipe_hash: u64,
 
-    pub rebuild_pending: bool,
+    //pub rebuild_pending: bool,
     pub build_record: Option<RecipeBuildRecord>,
 }
 
 struct BuildRecordDiff {
-    added_deps: Vec<OpaqueSnoozyRef>,
-    removed_deps: Vec<OpaqueSnoozyRef>,
+    added_deps: Vec<SnoozyRefDependency>,
+    removed_deps: Vec<SnoozyRefDependency>,
 }
 
 impl RecipeInfo {
     pub(crate) fn replace_desc(&mut self, other: RecipeInfo) {
         self.recipe_runner = other.recipe_runner;
         self.recipe_meta = other.recipe_meta;
-        self.rebuild_pending = other.rebuild_pending;
+        //self.rebuild_pending = other.rebuild_pending;
         self.recipe_hash = other.recipe_hash;
 
         // Don't replace the build_record
@@ -101,14 +139,15 @@ impl RecipeInfo {
     fn set_new_build_result(
         &mut self,
         build_result: RecipeBuildResult,
-        dependencies: HashSet<OpaqueSnoozyRef>,
+        dependencies: HashSet<SnoozyRefDependency>,
+        build_snapshot_idx: usize,
     ) -> BuildRecordDiff {
-        let (prev_deps, prev_rev_deps) = self
+        let (prev_deps, prev_rev_deps, prev_build_result) = self
             .build_record
             .take()
             .map(|r| {
                 let rev_deps = r.get_valid_reverse_dependencies();
-                (r.dependencies, rev_deps)
+                (r.dependencies, rev_deps, Some(r.build_result))
             })
             .unwrap_or_default();
 
@@ -116,11 +155,13 @@ impl RecipeInfo {
         let removed_deps = prev_deps.difference(&dependencies).cloned().collect();
 
         self.build_record = Some(RecipeBuildRecord {
-            last_valid_build_result: build_result,
+            build_result: build_result,
             dependencies,
             // Keep the previous reverse dependencies. Until the dependent assets get rebuild,
             // we must assume they still depend on the current asset.
             reverse_dependencies: prev_rev_deps.iter().map(|a| Arc::downgrade(&a.0)).collect(),
+            prev_build_result: prev_build_result,
+            build_snapshot_idx,
         });
 
         BuildRecordDiff {
@@ -133,7 +174,7 @@ impl RecipeInfo {
         Self {
             recipe_runner: self.recipe_runner.clone(),
             recipe_meta: self.recipe_meta.clone(),
-            rebuild_pending: true,
+            //rebuild_pending: true,
             build_record: None,
             recipe_hash: self.recipe_hash,
         }
@@ -150,16 +191,16 @@ lazy_static! {
 }
 
 pub(crate) struct AssetReg {
-    pub refs: RwLock<HashMap<OpaqueSnoozyAddr, WeakOpaqueSnoozyRef>>,
+    pub refs: RwLock<HashMap<OpaqueSnoozyAddr, Weak<OpaqueSnoozyRefInner>>>,
     pub queued_asset_invalidations: Arc<Mutex<Vec<OpaqueSnoozyRef>>>,
 }
 
 impl AssetReg {
-    pub fn propagate_invalidations(&self) {
+    pub fn propagate_invalidations(&self, snapshot_idx: usize) {
         let mut queued = self.queued_asset_invalidations.lock().unwrap();
 
         for opaque_ref in queued.iter() {
-            self.invalidate_asset_tree(opaque_ref);
+            self.invalidate_asset_tree(opaque_ref, snapshot_idx);
         }
 
         queued.clear();
@@ -172,24 +213,28 @@ impl AssetReg {
             .retain(|_k, v| v.strong_count() > 0);
     }
 
-    fn invalidate_asset_tree(&self, opaque_ref: &OpaqueSnoozyRef) {
-        let recipe_info = &opaque_ref.recipe_info;
+    fn invalidate_asset_tree(&self, opaque_ref: &Arc<OpaqueSnoozyRefInner>, snapshot_idx: usize) {
+        if opaque_ref
+            .rebuild_pending
+            .swap(snapshot_idx, atomic::Ordering::AcqRel)
+            != snapshot_idx
+        {
+            let recipe_info = &opaque_ref.recipe_info;
+            let mut recipe_info = recipe_info.write().unwrap();
 
-        let mut recipe_info = recipe_info.write().unwrap();
-        recipe_info.rebuild_pending = true;
+            tracing::debug!(
+                "invalidate asset tree of {}",
+                recipe_info.recipe_meta.op_name
+            );
 
-        tracing::debug!(
-            "invalidate asset tree of {}",
-            recipe_info.recipe_meta.op_name
-        );
-
-        if let Some(ref build_record) = recipe_info.build_record {
-            for dep in build_record
-                .reverse_dependencies
-                .iter()
-                .filter_map(|a| Some(OpaqueSnoozyRef(Weak::upgrade(a)?)))
-            {
-                self.invalidate_asset_tree(&dep);
+            if let Some(ref build_record) = recipe_info.build_record {
+                for dep in build_record
+                    .reverse_dependencies
+                    .iter()
+                    .filter_map(|a| Some(Weak::upgrade(a)?))
+                {
+                    self.invalidate_asset_tree(&dep, snapshot_idx);
+                }
             }
         }
     }
@@ -298,23 +343,17 @@ impl AssetReg {
             evaluation_path
         );
 
-        let eval_lock = opaque_ref.being_evaluated.lock().await;
-
-        tracing::debug!("got the eval lock");
-
-        let (rebuild_pending, recipe_runner) = {
-            let recipe_info = &opaque_ref.recipe_info;
-            let recipe_info = recipe_info.read().unwrap();
-
-            (
-                recipe_info.rebuild_pending,
-                recipe_info.recipe_runner.clone(),
-            )
-        };
-
-        tracing::debug!("got rebuild pending info");
-
+        let rebuild_pending = opaque_ref.rebuild_pending.load(atomic::Ordering::Acquire) != 0;
         if rebuild_pending {
+            let eval_lock = opaque_ref.being_evaluated.lock().await;
+            tracing::debug!("got the eval lock");
+
+            let recipe_runner = {
+                let recipe_info = &opaque_ref.recipe_info;
+                let recipe_info = recipe_info.read().unwrap();
+                recipe_info.recipe_runner.clone()
+            };
+
             let mut evaluation_path = evaluation_path;
             evaluation_path.insert(opaque_ref.to_evaluation_path_node());
 
@@ -360,9 +399,11 @@ impl AssetReg {
                         debug_info: ctx.debug_info.into_inner().unwrap(),
                     };
 
-                    recipe_info.rebuild_pending = false;
-                    let build_record_diff = recipe_info
-                        .set_new_build_result(res, ctx.dependencies.into_inner().unwrap());
+                    let build_record_diff = recipe_info.set_new_build_result(
+                        res,
+                        ctx.dependencies.into_inner().unwrap(),
+                        eval_context.snapshot_idx,
+                    );
 
                     for dep in &build_record_diff.removed_deps {
                         // Don't keep circular dependencies
@@ -370,12 +411,12 @@ impl AssetReg {
                             .evaluation_path
                             .lock()
                             .unwrap()
-                            .contains(&dep.to_evaluation_path_node())
+                            .contains(&dep.0.to_evaluation_path_node())
                         {
                             continue;
                         }
 
-                        let dep = &dep.recipe_info;
+                        let dep = &dep.0.recipe_info;
                         let mut dep = dep.write().unwrap();
                         let to_remove: *const OpaqueSnoozyRefInner = &***opaque_ref;
 
@@ -393,12 +434,12 @@ impl AssetReg {
                             .evaluation_path
                             .lock()
                             .unwrap()
-                            .contains(&dep.to_evaluation_path_node())
+                            .contains(&dep.0.to_evaluation_path_node())
                         {
                             continue;
                         }
 
-                        let dep = &dep.recipe_info;
+                        let dep = &dep.0.recipe_info;
                         let mut dep = dep.write().unwrap();
                         let to_add: *const OpaqueSnoozyRefInner = &***opaque_ref;
 
@@ -415,13 +456,19 @@ impl AssetReg {
                             }
                         }
                     }
+
+                    opaque_ref
+                        .rebuild_pending
+                        .store(0, atomic::Ordering::Release);
                 }
                 Err(err) => {
                     let recipe_info = &opaque_ref.recipe_info;
                     let mut recipe_info = recipe_info.write().unwrap();
 
                     // Build failed, but unless anything changes, this is what we're stuck with
-                    recipe_info.rebuild_pending = false;
+                    opaque_ref
+                        .rebuild_pending
+                        .store(0, atomic::Ordering::Release);
 
                     //println!("Error building asset {:?}: {}", opaque_ref, err);
 
@@ -431,8 +478,8 @@ impl AssetReg {
                     );
                 }
             }
-        }
 
-        drop(eval_lock);
+            drop(eval_lock);
+        }
     }
 }

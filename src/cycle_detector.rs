@@ -23,13 +23,13 @@ impl CycleDetectorBackend {
                 self.graph.add_node(v0);
                 self.graph.add_node(v1);
                 self.graph.add_edge(v0, v1, ());
-                println!("adding edge {} -> {}", v0, v1);
+                //println!("adding edge {} -> {}", v0, v1);
             }
 
             if petgraph::algo::is_cyclic_directed(&self.graph) {
                 // TODO: report the exact cycle
                 self.cycle_found.store(true, atomic::Ordering::Relaxed);
-                println!("Cycle found! Bailing!");
+                println!("Cycle found! Bailing! Make sure to use .prev() on refs");
                 std::process::exit(1);
                 //break;
             }

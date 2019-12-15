@@ -1,5 +1,6 @@
 use crate::asset_reg::{
-    RecipeBuildRecord, RecipeDebugInfo, RecipeInfo, RecipeMeta, RecipeRunner, ASSET_REG,
+    RecipeBuildRecord, RecipeDebugInfo, RecipeInfo, RecipeMeta, RecipeRunner, SnoozyRefDependency,
+    ASSET_REG,
 };
 use crate::cycle_detector::{create_cycle_detector, CycleDetector};
 use crate::maybe_serialize::MaybeSerialize;
@@ -13,16 +14,17 @@ use std::any::Any;
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::pin::Pin;
-use std::sync::{Arc, Mutex, RwLock, Weak};
+use std::sync::{atomic::AtomicUsize, Arc, Mutex, RwLock, Weak};
 
 #[derive(Clone)]
 pub struct EvalContext {
     pub cycle_detector: CycleDetector,
+    pub snapshot_idx: usize,
 }
 
 pub struct ContextInner {
     pub(crate) opaque_ref: OpaqueSnoozyRef, // Handle for the asset that this Context was created for
-    pub(crate) dependencies: Mutex<HashSet<OpaqueSnoozyRef>>,
+    pub(crate) dependencies: Mutex<HashSet<SnoozyRefDependency>>,
     pub(crate) evaluation_path: Mutex<HashSet<EvaluationPathNode>>,
     pub(crate) debug_info: Mutex<RecipeDebugInfo>,
 }
@@ -54,29 +56,46 @@ impl Context {
         let asset_ref = asset_ref.into();
         let opaque_ref: OpaqueSnoozyRef = asset_ref.opaque;
 
-        self.eval_context.cycle_detector.add_edge(
-            inner.opaque_ref.to_evaluation_path_node().into_raw(),
-            opaque_ref.to_evaluation_path_node().into_raw(),
-        );
         inner
             .dependencies
             .lock()
             .unwrap()
-            .insert(opaque_ref.clone());
+            .insert(SnoozyRefDependency(opaque_ref.clone().inner));
 
-        let child_eval_path = inner.evaluation_path.lock().unwrap().clone();
-        ASSET_REG
-            .evaluate_recipe(&opaque_ref, child_eval_path, self.eval_context.clone())
-            .await;
+        if !opaque_ref.use_prev {
+            self.eval_context.cycle_detector.add_edge(
+                inner.opaque_ref.to_evaluation_path_node().into_raw(),
+                opaque_ref.to_evaluation_path_node().into_raw(),
+            );
+
+            let child_eval_path = inner.evaluation_path.lock().unwrap().clone();
+            ASSET_REG
+                .evaluate_recipe(&opaque_ref, child_eval_path, self.eval_context.clone())
+                .await;
+        }
 
         let recipe_info = &opaque_ref.recipe_info;
         let recipe_info = recipe_info.read().unwrap();
 
         match recipe_info.build_record {
             Some(RecipeBuildRecord {
-                ref last_valid_build_result,
+                ref build_result,
+                ref prev_build_result,
+                build_snapshot_idx,
                 ..
-            }) => Ok(last_valid_build_result.artifact.clone().downcast().unwrap()),
+            }) => {
+                if !opaque_ref.use_prev || build_snapshot_idx != self.eval_context.snapshot_idx {
+                    Ok(build_result.artifact.clone().downcast().unwrap())
+                } else {
+                    Ok(prev_build_result
+                        .as_ref()
+                        .expect("prev_build_result")
+                        .artifact
+                        .clone()
+                        .downcast()
+                        .unwrap())
+                }
+            }
             _ => Err(format_err!(
                 "Requested asset {:?} failed to build ({})",
                 *opaque_ref,
@@ -148,7 +167,7 @@ fn def_binding<
             let recipe_info = RwLock::new(RecipeInfo {
                 recipe_runner: Arc::new(op),
                 recipe_meta: RecipeMeta::new::<AssetType>(<OpType as Op>::name()),
-                rebuild_pending: true,
+                //rebuild_pending: true,
                 build_record: None,
                 recipe_hash,
             });
@@ -157,28 +176,41 @@ fn def_binding<
                 addr: opaque_addr.clone(),
                 recipe_info,
                 being_evaluated: Default::default(),
+                rebuild_pending: AtomicUsize::new(1),
             });
 
             refs.insert(opaque_addr, Arc::downgrade(&opaque_ref));
 
-            SnoozyRef::new(OpaqueSnoozyRef(opaque_ref))
+            SnoozyRef::new(OpaqueSnoozyRef {
+                inner: opaque_ref,
+                use_prev: false,
+            })
         }
         // Definition exists, so we can just return it.
         Some(opaque_ref) => {
             let entry = opaque_ref.recipe_info.read().unwrap();
             assert_eq!(entry.recipe_hash, recipe_hash);
-            SnoozyRef::new(OpaqueSnoozyRef(opaque_ref.clone()))
+            SnoozyRef::new(OpaqueSnoozyRef {
+                inner: opaque_ref.clone(),
+                use_prev: false,
+            })
         }
     }
 }
 
-pub struct Snapshot;
+pub struct Snapshot(usize);
 impl Snapshot {
     pub async fn get<Res: 'static + Send + Sync>(&self, asset_ref: SnoozyRef<Res>) -> Arc<Res> {
         let opaque_ref: OpaqueSnoozyRef = asset_ref.into();
 
+        // TODO: Use Context::get from here, remove copy-pasta.
+        assert!(!opaque_ref.use_prev);
+
         let (cycle_detector, cycle_detector_backend) = create_cycle_detector();
-        let eval_context = EvalContext { cycle_detector };
+        let eval_context = EvalContext {
+            cycle_detector,
+            snapshot_idx: self.0,
+        };
 
         std::thread::spawn(move || {
             cycle_detector_backend.run();
@@ -193,25 +225,23 @@ impl Snapshot {
 
         match recipe_info.build_record {
             Some(RecipeBuildRecord {
-                ref last_valid_build_result,
-                ..
-            }) => last_valid_build_result.artifact.clone().downcast().unwrap(),
+                ref build_result, ..
+            }) => build_result.artifact.clone().downcast().unwrap(),
             None => panic!("Requested asset {:?} failed to build", *opaque_ref),
         }
     }
 }
 
-pub fn with_snapshot<F, Ret>(callback: F) -> Ret
-where
-    F: FnOnce(Snapshot) -> Ret,
-{
-    ASSET_REG.propagate_invalidations();
-    ASSET_REG.collect_garbage();
-    callback(Snapshot)
-}
+static mut SNAPSHOT_IDX: usize = 1;
 
 pub fn get_snapshot() -> Snapshot {
-    ASSET_REG.propagate_invalidations();
+    let snapshot_idx = unsafe { SNAPSHOT_IDX };
+    unsafe {
+        SNAPSHOT_IDX += 1;
+    }
+
+    ASSET_REG.propagate_invalidations(snapshot_idx);
     ASSET_REG.collect_garbage();
-    Snapshot
+
+    Snapshot(snapshot_idx)
 }

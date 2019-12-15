@@ -8,7 +8,10 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::mem::transmute;
-use std::sync::{Arc, RwLock, Weak};
+use std::sync::{
+    atomic::{self, AtomicUsize},
+    Arc, RwLock, Weak,
+};
 
 #[derive(Hash, Clone, Copy, Eq, PartialEq, Debug, Serialize)]
 pub struct SnoozyIdentityHash(pub(crate) u64);
@@ -43,6 +46,7 @@ impl Serialize for OpaqueSnoozyAddr {
 pub struct OpaqueSnoozyRefInner {
     pub(crate) addr: OpaqueSnoozyAddr,
     pub recipe_info: RwLock<crate::asset_reg::RecipeInfo>,
+    pub rebuild_pending: AtomicUsize,
     pub(crate) being_evaluated: futures::lock::Mutex<()>,
 }
 
@@ -60,6 +64,7 @@ impl OpaqueSnoozyRefInner {
         Self {
             addr: self.addr.clone(),
             recipe_info: RwLock::new(self.recipe_info.read().unwrap().clone_desc()),
+            rebuild_pending: AtomicUsize::new(1),
             being_evaluated: Default::default(),
         }
     }
@@ -89,11 +94,14 @@ impl Serialize for OpaqueSnoozyRefInner {
 }
 
 #[derive(Clone, Serialize)]
-pub struct OpaqueSnoozyRef(pub Arc<OpaqueSnoozyRefInner>);
+pub struct OpaqueSnoozyRef {
+    pub inner: Arc<OpaqueSnoozyRefInner>,
+    pub use_prev: bool,
+}
 
 impl OpaqueSnoozyRef {
     pub fn get_transient_op_id(&self) -> usize {
-        let inner: &OpaqueSnoozyRefInner = &**self;
+        let inner: &OpaqueSnoozyRefInner = &*self.inner;
         inner as *const OpaqueSnoozyRefInner as usize
     }
 }
@@ -102,32 +110,32 @@ impl std::ops::Deref for OpaqueSnoozyRef {
     type Target = Arc<OpaqueSnoozyRefInner>;
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.inner
     }
 }
 
+impl Eq for OpaqueSnoozyRef {}
 impl PartialEq for OpaqueSnoozyRef {
     fn eq(&self, other: &Self) -> bool {
-        std::ptr::eq(
-            &*self.0 as *const OpaqueSnoozyRefInner,
-            &*other.0 as *const OpaqueSnoozyRefInner,
-        )
+        self.use_prev == other.use_prev
+            && std::ptr::eq(
+                &*self.inner as *const OpaqueSnoozyRefInner,
+                &*other.inner as *const OpaqueSnoozyRefInner,
+            )
     }
 }
-impl Eq for OpaqueSnoozyRef {}
-
-pub type WeakOpaqueSnoozyRef = Weak<OpaqueSnoozyRefInner>;
-
 impl Hash for OpaqueSnoozyRef {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        let ptr = &***self as *const OpaqueSnoozyRefInner as usize;
+        let ptr = &*self.inner as *const OpaqueSnoozyRefInner as usize;
         ptr.hash(state);
+        self.use_prev.hash(state);
     }
 }
 
 #[derive(Hash, Serialize)]
 pub struct SnoozyRef<Res> {
     pub opaque: OpaqueSnoozyRef,
+    // TODO: move `isolated` to `opaque`?
     isolated: bool,
     phantom: PhantomData<Res>,
 }
@@ -146,8 +154,19 @@ impl<Res> SnoozyRef<Res> {
     }
 
     pub fn isolate(mut self) -> Self {
-        self.opaque = OpaqueSnoozyRef(Arc::new((*self.opaque).clone_desc()));
+        self.opaque = OpaqueSnoozyRef {
+            inner: Arc::new((self.opaque.inner).clone_desc()),
+            use_prev: self.opaque.use_prev,
+        };
         self.isolated = true;
+        self
+    }
+
+    pub fn prev(mut self) -> Self {
+        self.opaque = OpaqueSnoozyRef {
+            inner: self.opaque.inner.clone(),
+            use_prev: true,
+        };
         self
     }
 
@@ -158,7 +177,10 @@ impl<Res> SnoozyRef<Res> {
         );
 
         let (cycle_detector, cycle_detector_backend) = create_cycle_detector();
-        let eval_context = EvalContext { cycle_detector };
+        let eval_context = EvalContext {
+            cycle_detector,
+            snapshot_idx: 0,
+        };
 
         std::thread::spawn(move || {
             cycle_detector_backend.run();
@@ -179,8 +201,13 @@ impl<Res> SnoozyRef<Res> {
             entry.recipe_hash != other_entry.recipe_hash
         };
 
+        self.opaque.rebuild_pending.store(
+            other.opaque.rebuild_pending.load(atomic::Ordering::Acquire),
+            atomic::Ordering::Release,
+        );
+
         let mut info = self.opaque.recipe_info.write().unwrap();
-        let other_info = Arc::try_unwrap(other.opaque.0)
+        let other_info = Arc::try_unwrap(other.opaque.inner)
             .expect("Rebind source must have only one reference")
             .recipe_info
             .into_inner()

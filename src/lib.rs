@@ -10,9 +10,10 @@ mod maybe_serialize;
 mod refs;
 mod whatever_hash;
 
+pub use asset_reg::SnoozyRefDependency;
 pub use futures;
 pub use iface::*;
-pub use refs::{OpaqueSnoozyRef, SnoozyRef};
+pub use refs::{OpaqueSnoozyRef, OpaqueSnoozyRefInner, SnoozyRef};
 pub use whatever_hash::whatever_hash;
 
 #[allow(unused_imports)]
