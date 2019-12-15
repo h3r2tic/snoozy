@@ -162,12 +162,10 @@ impl<Res> SnoozyRef<Res> {
         self
     }
 
-    pub fn prev(mut self) -> Self {
-        self.opaque = OpaqueSnoozyRef {
-            inner: self.opaque.inner.clone(),
-            use_prev: true,
-        };
-        self
+    pub fn prev(&self) -> Self {
+        let mut res = self.clone();
+        res.opaque.use_prev = true;
+        res
     }
 
     pub fn rebind(&mut self, other: Self) {
@@ -182,9 +180,10 @@ impl<Res> SnoozyRef<Res> {
             snapshot_idx: 0,
         };
 
-        std::thread::spawn(move || {
+        // TODO
+        /*std::thread::spawn(move || {
             cycle_detector_backend.run();
-        });
+        });*/
 
         // TODO: figre out how not to do it here.
         // Evaluate the recipe in case it's used recursively in its own definition

@@ -198,8 +198,19 @@ fn def_binding<
     }
 }
 
-pub struct Snapshot(usize);
-impl Snapshot {
+// TODO: Use futures(?)
+pub struct Snapshot<TaskSpawner>
+where
+    TaskSpawner: Fn(Box<dyn FnOnce() + Send>),
+{
+    snapshot_idx: usize,
+    task_spawner: TaskSpawner,
+}
+
+impl<TaskSpawner> Snapshot<TaskSpawner>
+where
+    TaskSpawner: Fn(Box<dyn FnOnce() + Send>),
+{
     pub async fn get<Res: 'static + Send + Sync>(&self, asset_ref: SnoozyRef<Res>) -> Arc<Res> {
         let opaque_ref: OpaqueSnoozyRef = asset_ref.into();
 
@@ -209,12 +220,12 @@ impl Snapshot {
         let (cycle_detector, cycle_detector_backend) = create_cycle_detector();
         let eval_context = EvalContext {
             cycle_detector,
-            snapshot_idx: self.0,
+            snapshot_idx: self.snapshot_idx,
         };
 
-        std::thread::spawn(move || {
+        (self.task_spawner)(Box::new(move || {
             cycle_detector_backend.run();
-        });
+        }));
 
         ASSET_REG
             .evaluate_recipe(&opaque_ref, HashSet::new(), eval_context)
@@ -234,7 +245,10 @@ impl Snapshot {
 
 static mut SNAPSHOT_IDX: usize = 1;
 
-pub fn get_snapshot() -> Snapshot {
+pub fn get_snapshot<TaskSpawner>(task_spawner: TaskSpawner) -> Snapshot<TaskSpawner>
+where
+    TaskSpawner: Fn(Box<dyn FnOnce() + Send>),
+{
     let snapshot_idx = unsafe { SNAPSHOT_IDX };
     unsafe {
         SNAPSHOT_IDX += 1;
@@ -243,5 +257,8 @@ pub fn get_snapshot() -> Snapshot {
     ASSET_REG.propagate_invalidations(snapshot_idx);
     ASSET_REG.collect_garbage();
 
-    Snapshot(snapshot_idx)
+    Snapshot {
+        snapshot_idx,
+        task_spawner,
+    }
 }

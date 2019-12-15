@@ -222,10 +222,10 @@ impl AssetReg {
             let recipe_info = &opaque_ref.recipe_info;
             let mut recipe_info = recipe_info.write().unwrap();
 
-            tracing::debug!(
+            /*tracing::debug!(
                 "invalidate asset tree of {}",
                 recipe_info.recipe_meta.op_name
-            );
+            );*/
 
             if let Some(ref build_record) = recipe_info.build_record {
                 for dep in build_record
@@ -325,157 +325,157 @@ impl AssetReg {
         evaluation_path: HashSet<EvaluationPathNode>,
         eval_context: EvalContext,
     ) {
-        tracing::debug!(
+        /*tracing::debug!(
             "evaluate_recipe({}): {:?}",
             opaque_ref.recipe_info.read().unwrap().recipe_meta.op_name,
             opaque_ref.to_evaluation_path_node()
-        );
+        );*/
 
         let evaluation_path_node = opaque_ref.to_evaluation_path_node();
         if evaluation_path.contains(&evaluation_path_node) {
-            tracing::debug!("Recipe already being evaluated");
+            //tracing::debug!("Recipe already being evaluated");
             return;
         }
 
-        tracing::debug!(
+        /*tracing::debug!(
             "proceeding with eval. node: {:?}; path: {:?}",
             evaluation_path_node,
             evaluation_path
-        );
+        );*/
 
         let rebuild_pending = opaque_ref.rebuild_pending.load(atomic::Ordering::Acquire) != 0;
         if rebuild_pending {
             let eval_lock = opaque_ref.being_evaluated.lock().await;
-            tracing::debug!("got the eval lock");
-
-            let recipe_runner = {
-                let recipe_info = &opaque_ref.recipe_info;
-                let recipe_info = recipe_info.read().unwrap();
-                recipe_info.recipe_runner.clone()
-            };
-
-            let mut evaluation_path = evaluation_path;
-            evaluation_path.insert(opaque_ref.to_evaluation_path_node());
-
-            let ctx = Context {
-                inner: Arc::new(ContextInner {
-                    opaque_ref: opaque_ref.clone(),
-                    dependencies: Mutex::new(HashSet::new()),
-                    evaluation_path: Mutex::new(evaluation_path),
-                    debug_info: Mutex::new(RecipeDebugInfo::default()),
-                }),
-                eval_context: eval_context.clone(),
-            };
-
-            tracing::debug!(
-                "Running {}",
-                opaque_ref.recipe_info.read().unwrap().recipe_meta.op_name
-            );
-
-            let (res_or_err, should_cache) = {
-                if let Some(cached) = { self.get_cached_build_result(&opaque_ref) } {
-                    (Ok(cached), false)
-                } else {
-                    let res = recipe_runner.run(ctx.clone()).await;
-                    (res, recipe_runner.should_cache_result())
-                }
-            };
-
-            match res_or_err {
-                Ok(res) => {
+            if opaque_ref.rebuild_pending.load(atomic::Ordering::Acquire) != 0 {
+                let recipe_runner = {
                     let recipe_info = &opaque_ref.recipe_info;
-                    let mut recipe_info = recipe_info.write().unwrap();
+                    let recipe_info = recipe_info.read().unwrap();
+                    recipe_info.recipe_runner.clone()
+                };
 
-                    if should_cache {
-                        self.cache_build_result(&opaque_ref.addr, &*res, &recipe_info);
+                let mut evaluation_path = evaluation_path;
+                evaluation_path.insert(opaque_ref.to_evaluation_path_node());
+
+                let ctx = Context {
+                    inner: Arc::new(ContextInner {
+                        opaque_ref: opaque_ref.clone(),
+                        dependencies: Mutex::new(HashSet::new()),
+                        evaluation_path: Mutex::new(evaluation_path),
+                        debug_info: Mutex::new(RecipeDebugInfo::default()),
+                    }),
+                    eval_context: eval_context.clone(),
+                };
+
+                /*tracing::debug!(
+                    "Running {}",
+                    opaque_ref.recipe_info.read().unwrap().recipe_meta.op_name
+                );*/
+
+                let (res_or_err, should_cache) = {
+                    if let Some(cached) = { self.get_cached_build_result(&opaque_ref) } {
+                        (Ok(cached), false)
+                    } else {
+                        let res = recipe_runner.run(ctx.clone()).await;
+                        (res, recipe_runner.should_cache_result())
                     }
+                };
 
-                    let ctx = Arc::try_unwrap(ctx.inner)
-                        .ok()
-                        .expect("Could not unwrap Context. Reference retained by user.");
+                match res_or_err {
+                    Ok(res) => {
+                        let recipe_info = &opaque_ref.recipe_info;
+                        let mut recipe_info = recipe_info.write().unwrap();
 
-                    let res = RecipeBuildResult {
-                        artifact: res,
-                        debug_info: ctx.debug_info.into_inner().unwrap(),
-                    };
-
-                    let build_record_diff = recipe_info.set_new_build_result(
-                        res,
-                        ctx.dependencies.into_inner().unwrap(),
-                        eval_context.snapshot_idx,
-                    );
-
-                    for dep in &build_record_diff.removed_deps {
-                        // Don't keep circular dependencies
-                        if ctx
-                            .evaluation_path
-                            .lock()
-                            .unwrap()
-                            .contains(&dep.0.to_evaluation_path_node())
-                        {
-                            continue;
+                        if should_cache {
+                            self.cache_build_result(&opaque_ref.addr, &*res, &recipe_info);
                         }
 
-                        let dep = &dep.0.recipe_info;
-                        let mut dep = dep.write().unwrap();
-                        let to_remove: *const OpaqueSnoozyRefInner = &***opaque_ref;
+                        let ctx = Arc::try_unwrap(ctx.inner)
+                            .ok()
+                            .expect("Could not unwrap Context. Reference retained by user.");
 
-                        if let Some(ref mut build_record) = dep.build_record {
-                            build_record.reverse_dependencies.retain(|r| {
-                                let r = r.as_raw();
-                                !r.is_null() && !std::ptr::eq(r, to_remove)
-                            });
-                        }
-                    }
+                        let res = RecipeBuildResult {
+                            artifact: res,
+                            debug_info: ctx.debug_info.into_inner().unwrap(),
+                        };
 
-                    for dep in &build_record_diff.added_deps {
-                        // Don't keep circular dependencies
-                        if ctx
-                            .evaluation_path
-                            .lock()
-                            .unwrap()
-                            .contains(&dep.0.to_evaluation_path_node())
-                        {
-                            continue;
-                        }
+                        let build_record_diff = recipe_info.set_new_build_result(
+                            res,
+                            ctx.dependencies.into_inner().unwrap(),
+                            eval_context.snapshot_idx,
+                        );
 
-                        let dep = &dep.0.recipe_info;
-                        let mut dep = dep.write().unwrap();
-                        let to_add: *const OpaqueSnoozyRefInner = &***opaque_ref;
+                        for dep in &build_record_diff.removed_deps {
+                            // Don't keep circular dependencies
+                            if ctx
+                                .evaluation_path
+                                .lock()
+                                .unwrap()
+                                .contains(&dep.0.to_evaluation_path_node())
+                            {
+                                continue;
+                            }
 
-                        if let Some(ref mut build_record) = dep.build_record {
-                            let exists = build_record
-                                .reverse_dependencies
-                                .iter()
-                                .any(|r| std::ptr::eq(r.as_raw(), to_add));
+                            let dep = &dep.0.recipe_info;
+                            let mut dep = dep.write().unwrap();
+                            let to_remove: *const OpaqueSnoozyRefInner = &***opaque_ref;
 
-                            if !exists {
-                                build_record
-                                    .reverse_dependencies
-                                    .push(Arc::downgrade(opaque_ref));
+                            if let Some(ref mut build_record) = dep.build_record {
+                                build_record.reverse_dependencies.retain(|r| {
+                                    let r = r.as_raw();
+                                    !r.is_null() && !std::ptr::eq(r, to_remove)
+                                });
                             }
                         }
+
+                        for dep in &build_record_diff.added_deps {
+                            // Don't keep circular dependencies
+                            if ctx
+                                .evaluation_path
+                                .lock()
+                                .unwrap()
+                                .contains(&dep.0.to_evaluation_path_node())
+                            {
+                                continue;
+                            }
+
+                            let dep = &dep.0.recipe_info;
+                            let mut dep = dep.write().unwrap();
+                            let to_add: *const OpaqueSnoozyRefInner = &***opaque_ref;
+
+                            if let Some(ref mut build_record) = dep.build_record {
+                                let exists = build_record
+                                    .reverse_dependencies
+                                    .iter()
+                                    .any(|r| std::ptr::eq(r.as_raw(), to_add));
+
+                                if !exists {
+                                    build_record
+                                        .reverse_dependencies
+                                        .push(Arc::downgrade(opaque_ref));
+                                }
+                            }
+                        }
+
+                        opaque_ref
+                            .rebuild_pending
+                            .store(0, atomic::Ordering::Release);
                     }
+                    Err(err) => {
+                        let recipe_info = &opaque_ref.recipe_info;
+                        let mut recipe_info = recipe_info.write().unwrap();
 
-                    opaque_ref
-                        .rebuild_pending
-                        .store(0, atomic::Ordering::Release);
-                }
-                Err(err) => {
-                    let recipe_info = &opaque_ref.recipe_info;
-                    let mut recipe_info = recipe_info.write().unwrap();
+                        // Build failed, but unless anything changes, this is what we're stuck with
+                        opaque_ref
+                            .rebuild_pending
+                            .store(0, atomic::Ordering::Release);
 
-                    // Build failed, but unless anything changes, this is what we're stuck with
-                    opaque_ref
-                        .rebuild_pending
-                        .store(0, atomic::Ordering::Release);
+                        //println!("Error building asset {:?}: {}", opaque_ref, err);
 
-                    //println!("Error building asset {:?}: {}", opaque_ref, err);
-
-                    println!(
-                        "Error running op {}: {}",
-                        recipe_info.recipe_meta.op_name, err
-                    );
+                        println!(
+                            "Error running op {}: {}",
+                            recipe_info.recipe_meta.op_name, err
+                        );
+                    }
                 }
             }
 
