@@ -1,9 +1,9 @@
-use crate::asset_reg::{
-    RecipeBuildRecord, RecipeDebugInfo, RecipeInfo, RecipeMeta, RecipeRunner, SnoozyRefDependency,
-    ASSET_REG,
-};
+use crate::asset_reg::ASSET_REG;
 use crate::cycle_detector::{create_cycle_detector, CycleDetector};
 use crate::maybe_serialize::MaybeSerialize;
+use crate::recipe_info::{
+    RecipeBuildRecord, RecipeDebugInfo, RecipeInfo, RecipeMeta, RecipeRunner, SnoozyRefDependency,
+};
 use crate::refs::{
     EvaluationPathNode, OpaqueSnoozyAddr, OpaqueSnoozyRef, OpaqueSnoozyRefInner,
     SnoozyIdentityHash, SnoozyRef,

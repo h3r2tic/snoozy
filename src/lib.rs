@@ -7,12 +7,13 @@ mod asset_reg;
 mod cycle_detector;
 mod iface;
 mod maybe_serialize;
+mod recipe_info;
 mod refs;
 mod whatever_hash;
 
-pub use asset_reg::SnoozyRefDependency;
 pub use futures;
 pub use iface::*;
+pub use recipe_info::SnoozyRefDependency;
 pub use refs::{OpaqueSnoozyRef, OpaqueSnoozyRefInner, SnoozyRef};
 pub use whatever_hash::whatever_hash;
 

@@ -4,27 +4,20 @@ use std::sync::{
     Arc, Mutex,
 };
 
-enum CycleDetectorCmd {
-    AddNode(usize),
-    AddEdge(usize, usize),
-}
+type CycleDetectorAddEdgeCmd = (usize, usize);
 
 pub struct CycleDetectorBackend {
-    cmd_channel: Receiver<CycleDetectorCmd>,
+    cmd_channel: Receiver<CycleDetectorAddEdgeCmd>,
     cycle_found: Arc<atomic::AtomicBool>,
     graph: petgraph::graphmap::DiGraphMap<usize, ()>,
 }
 
 impl CycleDetectorBackend {
     pub fn run(mut self) {
-        while let Ok(cmd) = self.cmd_channel.recv() {
-            // TODO: add node
-            if let CycleDetectorCmd::AddEdge(v0, v1) = cmd {
-                self.graph.add_node(v0);
-                self.graph.add_node(v1);
-                self.graph.add_edge(v0, v1, ());
-                //println!("adding edge {} -> {}", v0, v1);
-            }
+        while let Ok((v0, v1)) = self.cmd_channel.recv() {
+            self.graph.add_node(v0);
+            self.graph.add_node(v1);
+            self.graph.add_edge(v0, v1, ());
 
             if petgraph::algo::is_cyclic_directed(&self.graph) {
                 // TODO: report the exact cycle
@@ -44,7 +37,7 @@ pub struct CycleDetector {
     // The compiler too eagerly captures references to this type,
     // and wants &Sender to be Send, thus Sender to be Sync.
     // Only ever accessed via get_mut().
-    cmd_channel: Mutex<Sender<CycleDetectorCmd>>,
+    cmd_channel: Mutex<Sender<CycleDetectorAddEdgeCmd>>,
 }
 
 impl Clone for CycleDetector {
@@ -73,15 +66,11 @@ pub fn create_cycle_detector() -> (CycleDetector, CycleDetectorBackend) {
 }
 
 impl CycleDetector {
-    fn get_cycle_tracker(&self) -> Arc<atomic::AtomicBool> {
+    /*fn get_cycle_tracker(&self) -> Arc<atomic::AtomicBool> {
         self.cycle_found.clone()
-    }
+    }*/
 
     pub fn add_edge(&mut self, v0: usize, v1: usize) {
-        let _ = self
-            .cmd_channel
-            .get_mut()
-            .unwrap()
-            .send(CycleDetectorCmd::AddEdge(v0, v1));
+        let _ = self.cmd_channel.get_mut().unwrap().send((v0, v1));
     }
 }

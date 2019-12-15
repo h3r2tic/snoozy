@@ -1,5 +1,6 @@
 use crate::cycle_detector::create_cycle_detector;
 use crate::iface::EvalContext;
+use crate::recipe_info::RecipeInfo;
 use futures::executor::block_on;
 use serde::{ser::SerializeTuple, Serialize, Serializer};
 use std::any::TypeId;
@@ -10,7 +11,7 @@ use std::marker::PhantomData;
 use std::mem::transmute;
 use std::sync::{
     atomic::{self, AtomicUsize},
-    Arc, RwLock, Weak,
+    Arc, RwLock,
 };
 
 #[derive(Hash, Clone, Copy, Eq, PartialEq, Debug, Serialize)]
@@ -45,7 +46,7 @@ impl Serialize for OpaqueSnoozyAddr {
 
 pub struct OpaqueSnoozyRefInner {
     pub(crate) addr: OpaqueSnoozyAddr,
-    pub recipe_info: RwLock<crate::asset_reg::RecipeInfo>,
+    pub recipe_info: RwLock<RecipeInfo>,
     pub rebuild_pending: AtomicUsize,
     pub(crate) being_evaluated: futures::lock::Mutex<()>,
 }
