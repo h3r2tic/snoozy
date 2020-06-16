@@ -248,7 +248,7 @@ impl AssetReg {
 
                             if let Some(ref mut build_record) = dep.build_record {
                                 build_record.reverse_dependencies.retain(|r| {
-                                    let r = r.as_raw();
+                                    let r = r.as_ptr();
                                     !r.is_null() && !std::ptr::eq(r, to_remove)
                                 });
                             }
@@ -273,7 +273,7 @@ impl AssetReg {
                                 let exists = build_record
                                     .reverse_dependencies
                                     .iter()
-                                    .any(|r| std::ptr::eq(r.as_raw(), to_add));
+                                    .any(|r| std::ptr::eq(r.as_ptr(), to_add));
 
                                 if !exists {
                                     build_record
