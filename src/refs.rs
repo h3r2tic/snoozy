@@ -175,7 +175,7 @@ impl<Res> SnoozyRef<Res> {
             "rebind() can only be used on isolated refs. Use isolate() first."
         );
 
-        let (cycle_detector, cycle_detector_backend) = create_cycle_detector();
+        let (cycle_detector, _cycle_detector_backend) = create_cycle_detector();
         let eval_context = EvalContext {
             cycle_detector,
             snapshot_idx: 0,
