@@ -17,3 +17,4 @@ futures = "0.3.5"
 async-trait = "0.1"
 tracing = "0.1"
 petgraph = "0.5" # for cycle detection
+tokio = { version = "0.2.1", features = ["rt-core", "rt-threaded"] }

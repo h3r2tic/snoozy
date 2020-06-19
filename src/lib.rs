@@ -27,6 +27,7 @@ extern crate lazy_static;
 
 use std::default::Default;
 use std::hash::{Hash, Hasher};
+use std::sync::{Arc, Mutex};
 
 pub use failure::{err_msg, Error};
 pub use twox_hash::XxHash as DefaultSnoozyHash;
@@ -36,4 +37,12 @@ pub fn get_type_hash<T: 'static>() -> u64 {
     let mut s = DefaultSnoozyHash::default();
     std::any::TypeId::of::<T>().hash(&mut s);
     s.finish()
+}
+
+pub(crate) static mut RUNTIME: Option<Arc<Mutex<tokio::runtime::Runtime>>> = None;
+
+pub fn initialize_runtime(runtime: Arc<Mutex<tokio::runtime::Runtime>>) {
+    unsafe {
+        RUNTIME = Some(runtime);
+    }
 }

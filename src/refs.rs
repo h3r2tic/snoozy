@@ -1,7 +1,6 @@
 use crate::cycle_detector::create_cycle_detector;
 use crate::iface::EvalContext;
 use crate::recipe_info::RecipeInfo;
-use futures::executor::block_on;
 use serde::{ser::SerializeTuple, Serialize, Serializer};
 use std::any::TypeId;
 use std::collections::HashSet;
@@ -175,24 +174,30 @@ impl<Res> SnoozyRef<Res> {
             "rebind() can only be used on isolated refs. Use isolate() first."
         );
 
-        let (cycle_detector, _cycle_detector_backend) = create_cycle_detector();
-        let eval_context = EvalContext {
-            cycle_detector,
-            snapshot_idx: 0,
-        };
+        let mut runtime = unsafe { crate::RUNTIME.as_ref().unwrap() }
+            .try_lock()
+            .expect("SnoozyRef::rebind cannot be called from an async context");
 
-        // TODO
-        /*std::thread::spawn(move || {
-            cycle_detector_backend.run();
-        });*/
+        let opaque_ref = self.opaque.clone();
+        let task = runtime.spawn(async move {
+            let (cycle_detector, _cycle_detector_backend) = create_cycle_detector();
+            let eval_context = EvalContext {
+                cycle_detector,
+                snapshot_idx: 0,
+            };
 
-        // TODO: figre out how not to do it here.
+            // TODO
+            /*std::thread::spawn(move || {
+                cycle_detector_backend.run();
+            });*/
+
+            crate::asset_reg::ASSET_REG
+                .evaluate_recipe(&opaque_ref, HashSet::new(), eval_context)
+                .await
+        });
+
         // Evaluate the recipe in case it's used recursively in its own definition
-        block_on(crate::asset_reg::ASSET_REG.evaluate_recipe(
-            &self.opaque,
-            HashSet::new(),
-            eval_context,
-        ));
+        runtime.block_on(task).unwrap();
 
         let hash_difference = {
             let entry = self.opaque.recipe_info.read().unwrap();
