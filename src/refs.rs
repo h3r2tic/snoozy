@@ -168,12 +168,7 @@ impl<Res> SnoozyRef<Res> {
         res
     }
 
-    pub fn rebind(&mut self, other: Self) {
-        assert!(
-            self.isolated,
-            "rebind() can only be used on isolated refs. Use isolate() first."
-        );
-
+    pub fn evaluate_impl(&mut self) {
         let mut runtime = unsafe { crate::RUNTIME.as_ref().unwrap() }
             .try_lock()
             .expect("SnoozyRef::rebind cannot be called from an async context");
@@ -196,8 +191,59 @@ impl<Res> SnoozyRef<Res> {
                 .await
         });
 
-        // Evaluate the recipe in case it's used recursively in its own definition
         runtime.block_on(task).unwrap();
+    }
+
+    pub fn evaluate(mut self) -> Self {
+        self.evaluate_impl();
+        self
+    }
+
+    pub fn rebind(&mut self, other: Self) {
+        assert!(
+            self.isolated,
+            "rebind() can only be used on isolated refs. Use isolate() first."
+        );
+
+        // Evaluate the recipe in case it's used recursively in its own definition
+        self.evaluate_impl();
+
+        let hash_difference = {
+            let entry = self.opaque.recipe_info.read().unwrap();
+            let other_entry = other.opaque.recipe_info.read().unwrap();
+            //dbg!((entry.recipe_hash, other_entry.recipe_hash));
+            entry.recipe_hash != other_entry.recipe_hash
+        };
+
+        self.opaque.rebuild_pending.store(
+            other.opaque.rebuild_pending.load(atomic::Ordering::Acquire),
+            atomic::Ordering::Release,
+        );
+
+        let mut info = self.opaque.recipe_info.write().unwrap();
+        let other_info = Arc::try_unwrap(other.opaque.inner)
+            .expect("Rebind source must have only one reference")
+            .recipe_info
+            .into_inner()
+            .unwrap();
+
+        info.replace_desc(other_info);
+
+        if hash_difference {
+            // Schedule a full rebuild including of all of its reverse dependencies.
+            crate::asset_reg::ASSET_REG
+                .queued_asset_invalidations
+                .lock()
+                .unwrap()
+                .push(self.opaque.clone());
+        }
+    }
+
+    pub fn rebind_dyn(&mut self, other: Self) {
+        assert!(
+            self.isolated,
+            "rebind() can only be used on isolated refs. Use isolate() first."
+        );
 
         let hash_difference = {
             let entry = self.opaque.recipe_info.read().unwrap();
